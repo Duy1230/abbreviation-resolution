@@ -8,8 +8,11 @@ services:
     environment:
       - LLAMA_SERVER_URL=${LLAMA_SERVER_URL:-http://host.docker.internal:8080/v1}
       - LLAMA_MODEL=${LLAMA_MODEL:-local-model}
-      - LLAMA_TIMEOUT=${LLAMA_TIMEOUT:-120}
+      - LLAMA_TIMEOUT=${LLAMA_TIMEOUT:-600}
       # - LLAMA_API_KEY=${LLAMA_API_KEY}
+    volumes:
+      # Keep resolve checkpoints across restarts (progressive saving).
+      - ./checkpoints:/srv/checkpoints
     extra_hosts:
       # Lets the container reach a llama-server running on the host machine.
       - "host.docker.internal:host-gateway"

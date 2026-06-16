@@ -1,0 +1,9 @@
+{
+  "llama_server_url": "http://host.docker.internal:8080/v1",
+  "llama_model": "local-model",
+  "llama_api_key": "sk-1234",
+  "llama_timeout": 600.0,
+  "temperature": 0.0,
+  "checkpoint_every": 20,
+  "text_field": "input"
+}

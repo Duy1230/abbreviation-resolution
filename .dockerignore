@@ -11,6 +11,7 @@ tests/
 sample_data/
 *.md
 .env
+checkpoints/
 docker-compose.yml
 Dockerfile
 .dockerignore

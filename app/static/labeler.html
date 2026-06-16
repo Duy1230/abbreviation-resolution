@@ -29,7 +29,7 @@ button{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8p
 <main>
   <aside>
     <div class="card">
-      <label>Load file document (.txt, nhiều file)</label><input id="docInput" type="file" multiple accept=".txt,text/plain" />
+      <label>Load văn bản thô (.json, nhiều file) — như Auto-resolve</label><input id="docInput" type="file" multiple accept=".json,application/json" />
       <label>Load labeled documents (.json) — kết quả LLM</label><input id="docJsonInput" type="file" accept=".json,application/json" />
       <label>Load dictionary (.json, có thể rỗng)</label><input id="dictInput" type="file" accept=".json,application/json" />
       <label>Load regex find/replace (.json, optional)</label><input id="replaceInput" type="file" accept=".json,application/json" />
@@ -73,7 +73,8 @@ function dictRegex(){const terms=Object.keys(dictionary).filter(t=>t&&t.trim()).
 function makeLabel(doc,start,end,term,sense,auto=false){return{start,end,term,senseId:sense.id,senseLabel:sense.label,senseExplanation:sense.explanation||'',text:doc.text.slice(start,end),auto}}
 function makeReplacement(doc,start,end,find,choice){return{start,end,find,replaceId:choice.id,replace:choice.replace,explanation:choice.explanation||'',text:doc.text.slice(start,end)}}
 
-docInput.onchange=async e=>{const files=[...e.target.files];documents=await Promise.all(files.map(async f=>({name:f.name,text:await f.text(),labels:[],replacements:[]})));currentDoc=0;selected=null;renderAll()};
+docInput.onchange=async e=>{const files=[...e.target.files];if(!files.length)return;try{const all=[];for(const f of files){const data=JSON.parse(await f.text());const list=Array.isArray(data)?data:((data&&data.documents)||[data]);list.forEach((rec,i)=>all.push(rawRecordToDoc(rec,f.name,i)))}documents=all;currentDoc=0;selected=null;renderAll()}catch(err){alert('JSON không hợp lệ (cần list of dict có trường "input"): '+err.message)}};
+function rawRecordToDoc(rec,fileName,i){const base=(fileName?fileName.replace(/\.[^.]+$/,''):'doc');if(rec&&typeof rec==='object'&&Array.isArray(rec.labels)){return{name:rec.name||rec.id||base+'_'+(i+1),text:rec.text||'',labels:rec.labels,replacements:Array.isArray(rec.replacements)?rec.replacements:[],meta:rec.meta}}if(rec&&typeof rec==='object'){const text=rec.input!=null?rec.input:(rec.text!=null?rec.text:'');const name=rec.name||rec.id||base+'_'+(i+1);const meta={};for(const k of Object.keys(rec)){if(k!=='input'&&k!=='text')meta[k]=rec[k]}return{name:String(name),text:String(text),labels:[],replacements:[],meta}}return{name:base+'_'+(i+1),text:String(rec==null?'':rec),labels:[],replacements:[]}}
 docJsonInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;try{loadDocuments(JSON.parse(await f.text()))}catch(err){alert('JSON không hợp lệ: '+err.message)}};
 dictInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;dictionary=normalizeDictionary(JSON.parse(await f.text()));selected=null;renderAll()};
 replaceInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;replaceRules=normalizeReplaceRules(JSON.parse(await f.text()));selected=null;renderAll()};

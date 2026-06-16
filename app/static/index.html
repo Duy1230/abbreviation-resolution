@@ -17,7 +17,7 @@ main{max-width:920px;margin:22px auto;padding:0 18px 60px}
 .card h2{font-size:15px;margin:0 0 4px}
 .step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;margin-right:8px}
 label{display:block;font-size:12px;font-weight:700;margin:12px 0 4px}
-input[type=text],input[type=number]{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;background:#fff;color:#111;font:inherit}
+input[type=text],input[type=number],input[type=password]{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;background:#fff;color:#111;font:inherit}
 input[type=file]{width:100%;font:inherit;margin-top:4px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -44,6 +44,11 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
 .progress-bar{height:6px;background:var(--accent);width:0;transition:width .2s ease}
 .log{margin-top:10px;max-height:240px;overflow:auto;background:#0f1419;color:#d8e1ea;border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap}
 .log-ok{color:#7ddc9f}.log-err{color:#ff8a8a}.log-warn{color:#ffcd5a}.log-muted{color:#7e8b96}
+table.ckpt{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+table.ckpt th,table.ckpt td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left;vertical-align:middle}
+table.ckpt th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+table.ckpt td .small{font-size:11px}
+.btn-mini{padding:5px 9px;font-size:12px}
 </style>
 </head>
 <body>
@@ -69,17 +74,29 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
         <input id="dictFile" type="file" accept=".json,application/json" />
       </div>
     </div>
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1;min-width:160px">
+    <div class="grid2" style="margin-top:4px">
+      <div>
         <label>Tên trường chứa văn bản</label>
         <input id="textField" type="text" value="input" />
       </div>
+      <div></div>
     </div>
+    <div class="grid2">
+      <div>
+        <label>Index bắt đầu (để trống = 0)</label>
+        <input id="startIndex" type="number" min="0" step="1" placeholder="0" />
+      </div>
+      <div>
+        <label>Index kết thúc (để trống = hết · bao gồm)</label>
+        <input id="endIndex" type="number" min="0" step="1" placeholder="(hết)" />
+      </div>
+    </div>
+    <div class="hintbox">Chọn khoảng mẫu để xử lý theo chỉ số (0-based, <b>bao gồm cả hai đầu</b>). Ví dụ bắt đầu=0, kết thúc=49 → xử lý 50 mẫu đầu. Sau khi bị timeout, đặt index bắt đầu = <code>next_index</code> của checkpoint để chạy tiếp.</div>
   </div>
 
   <div class="card">
     <h2><span class="step">2</span>Cấu hình LLM (llama.cpp)</h2>
-    <div class="small">Trỏ tới <code>llama-server</code> (OpenAI-compatible). Hoặc bật "Chạy thử" để xem pipeline mà không cần model.</div>
+    <div class="small">Trỏ tới <code>llama-server</code> (OpenAI-compatible). Các giá trị mặc định nạp từ <code>config.json</code>; bạn có thể sửa và bấm "Lưu làm mặc định". Hoặc bật "Chạy thử" để xem pipeline mà không cần model.</div>
     <div class="grid2">
       <div>
         <label>URL llama-server</label>
@@ -92,19 +109,35 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
     </div>
     <div class="grid2">
       <div>
+        <label>API key</label>
+        <input id="apiKey" type="text" placeholder="sk-1234" />
+      </div>
+      <div>
+        <label>Timeout (giây)</label>
+        <input id="timeout" type="number" min="1" step="1" placeholder="600" />
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
         <label>Temperature</label>
         <input id="temperature" type="number" value="0" min="0" max="2" step="0.1" />
       </div>
-      <div class="checkbox">
-        <input id="dryRun" type="checkbox" />
-        <label for="dryRun">Chạy thử (dry-run, không gọi model — dùng heuristic)</label>
+      <div>
+        <label>Lưu checkpoint sau mỗi N mẫu (0 = tắt)</label>
+        <input id="checkpointEvery" type="number" min="0" step="1" placeholder="20" />
       </div>
+    </div>
+    <div class="checkbox">
+      <input id="dryRun" type="checkbox" />
+      <label for="dryRun">Chạy thử (dry-run, không gọi model — dùng heuristic)</label>
     </div>
     <div class="row" style="margin-top:14px">
       <button id="checkBtn" type="button">Kiểm tra kết nối</button>
       <button id="testLlmBtn" type="button">Test LLM (gọi 1 prompt nhỏ)</button>
+      <button id="saveCfgBtn" type="button">Lưu làm mặc định</button>
     </div>
     <div id="checkStatus" class="status"></div>
+    <div id="cfgStatus" class="status"></div>
   </div>
 
   <div class="card">
@@ -134,6 +167,15 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
     </div>
     <div class="hintbox">"Review &amp; sửa" sẽ mở trình gán nhãn với kết quả đã nạp sẵn để bạn kiểm tra, chỉnh và export lại.</div>
   </div>
+
+  <div class="card">
+    <h2>Checkpoints đã lưu</h2>
+    <div class="small">Tự động lưu sau mỗi N mẫu (cấu hình ở bước 2). Dùng để khôi phục khi bị timeout: tải JSON kết quả tạm, hoặc đặt index bắt đầu = <code>next_index</code> để chạy tiếp.</div>
+    <div class="row" style="margin-top:12px">
+      <button id="refreshCkptBtn" type="button">Làm mới danh sách</button>
+    </div>
+    <div id="ckptWrap"></div>
+  </div>
 </main>
 
 <script>
@@ -162,16 +204,42 @@ function setProgress(done, total){
 async function loadConfig(){
   try{
     const cfg = await (await fetch('/api/config')).json();
-    if(!$('llamaUrl').value) $('llamaUrl').value = cfg.llama_server_url || '';
-    if(!$('model').value) $('model').value = cfg.llama_model || '';
+    $('llamaUrl').value = cfg.llama_server_url || '';
+    $('model').value = cfg.llama_model || '';
+    $('apiKey').value = cfg.llama_api_key != null ? cfg.llama_api_key : '';
+    $('timeout').value = cfg.llama_timeout != null ? cfg.llama_timeout : '';
+    $('temperature').value = cfg.temperature != null ? cfg.temperature : '0';
+    $('checkpointEvery').value = cfg.checkpoint_every != null ? cfg.checkpoint_every : '';
+    $('textField').value = cfg.text_field || 'input';
   }catch(e){ /* ignore, fields keep placeholders */ }
 }
 
+$('saveCfgBtn').onclick = async () => {
+  const body = {
+    llama_server_url: $('llamaUrl').value.trim(),
+    llama_model: $('model').value.trim(),
+    llama_api_key: $('apiKey').value,
+    llama_timeout: parseFloat($('timeout').value || '600'),
+    temperature: parseFloat($('temperature').value || '0'),
+    checkpoint_every: parseInt($('checkpointEvery').value || '20', 10),
+    text_field: $('textField').value.trim() || 'input',
+  };
+  setStatus($('cfgStatus'), 'info', '<span class="spinner"></span>Đang lưu config...');
+  try{
+    const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    await r.json();
+    setStatus($('cfgStatus'), 'ok', 'Đã lưu vào config.json. Lần sau sẽ tự nạp các giá trị này. (Biến môi trường LLAMA_* nếu có sẽ vẫn ưu tiên ghi đè.)');
+  }catch(e){ setStatus($('cfgStatus'), 'err', 'Không lưu được config: ' + e.message); }
+};
+
 $('checkBtn').onclick = async () => {
   const url = $('llamaUrl').value.trim();
+  const key = $('apiKey').value;
   setStatus($('checkStatus'), 'info', '<span class="spinner"></span>Đang kiểm tra /v1/models...');
   try{
-    const r = await (await fetch('/api/llm-check?llama_url=' + encodeURIComponent(url))).json();
+    const qs = '?llama_url=' + encodeURIComponent(url) + '&api_key=' + encodeURIComponent(key);
+    const r = await (await fetch('/api/llm-check' + qs)).json();
     if(r.ok){
       const models = (r.models && r.models.length) ? ' · models: ' + r.models.join(', ') : '';
       setStatus($('checkStatus'), 'ok', 'GET /v1/models OK: ' + r.url + models);
@@ -186,6 +254,7 @@ $('testLlmBtn').onclick = async () => {
   const fd = new FormData();
   fd.append('llama_url', $('llamaUrl').value.trim());
   fd.append('model', $('model').value.trim());
+  fd.append('api_key', $('apiKey').value);
   try{
     const r = await (await fetch('/api/test-llm', { method:'POST', body: fd })).json();
     if(r.ok){
@@ -232,9 +301,14 @@ $('runBtn').onclick = async () => {
   fd.append('dictionary_file', dictF);
   fd.append('llama_url', $('llamaUrl').value.trim());
   fd.append('model', $('model').value.trim());
+  fd.append('api_key', $('apiKey').value);
   fd.append('temperature', $('temperature').value || '0');
+  fd.append('timeout', $('timeout').value || '0');
   fd.append('dry_run', $('dryRun').checked ? 'true' : 'false');
   fd.append('text_field', $('textField').value.trim() || 'input');
+  fd.append('start_index', $('startIndex').value.trim());
+  fd.append('end_index', $('endIndex').value.trim());
+  fd.append('checkpoint_every', $('checkpointEvery').value.trim());
 
   $('runBtn').disabled = true;
   $('runLog').innerHTML = '';
@@ -243,7 +317,7 @@ $('runBtn').onclick = async () => {
   $('runProgressWrap').classList.remove('hidden');
   setStatus($('runStatus'), 'info', '<span class="spinner"></span>Đang gửi request...');
 
-  let total = 0, doneCount = 0, errCount = 0, finalResult = null, fatal = null;
+  let total = 0, doneCount = 0, errCount = 0, finalResult = null, fatal = null, runId = null, lastNext = null;
   try{
     const resp = await fetch('/api/resolve', { method:'POST', body: fd });
     if(!resp.ok){
@@ -258,11 +332,12 @@ $('runBtn').onclick = async () => {
       switch(ev.event){
         case 'start':
           total = ev.total || 0;
-          logLine('log-muted', `Bắt đầu: ${total} văn bản · ${ev.dictionary_words} từ trong dictionary (${ev.ambiguous_words} nhập nhằng)${ev.dry_run ? ' · DRY-RUN' : ''}`);
+          runId = ev.run_id;
+          logLine('log-muted', `Bắt đầu run=${ev.run_id}: ${total}/${ev.total_in_file} văn bản [${ev.start_index}..${ev.end_index==null?'hết':ev.end_index}] · ${ev.dictionary_words} từ dict (${ev.ambiguous_words} nhập nhằng)${ev.dry_run ? ' · DRY-RUN' : ''} · checkpoint mỗi ${ev.checkpoint_every||0} mẫu`);
           setStatus($('runStatus'), 'info', `<span class="spinner"></span>Đang xử lý 0/${total}...`);
           break;
         case 'document_start':
-          logLine('log-muted', `→ ${ev.index}/${ev.total} ${ev.name} (${ev.text_len} ký tự)`);
+          logLine('log-muted', `→ ${ev.index}/${ev.total} (src#${ev.source_index}) ${ev.name} (${ev.text_len} ký tự)`);
           setStatus($('runStatus'), 'info', `<span class="spinner"></span>Đang xử lý ${ev.index}/${ev.total}: ${esc(ev.name)}...`);
           break;
         case 'document_done':
@@ -276,8 +351,13 @@ $('runBtn').onclick = async () => {
           setProgress(doneCount, total);
           logLine('log-err', `   ${ev.name} ✗ ${ev.error_type||'Error'}: ${ev.error}`);
           break;
+        case 'checkpoint':
+          lastNext = ev.next_index;
+          logLine('log-warn', `💾 Đã lưu checkpoint: ${ev.processed} mẫu → ${ev.file}${ev.final?' (cuối)':''} · next_index=${ev.next_index}`);
+          break;
         case 'done':
           finalResult = ev;
+          lastNext = ev.next_index;
           logLine('log-ok', `Hoàn tất: ${ev.summary.documents} văn bản · ${ev.summary.terms} nhãn (direct=${ev.summary.direct} llm=${ev.summary.llm} none=${ev.summary.none})`);
           break;
         case 'fatal':
@@ -303,11 +383,14 @@ $('runBtn').onclick = async () => {
       : 'Hoàn tất. Xem kết quả bên dưới.';
     setStatus($('runStatus'), errCount > 0 ? 'info' : 'ok', okMsg);
     $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
+    refreshCheckpoints();
   }catch(e){
     setStatus($('runStatus'), 'err',
       `Thất bại: ${esc(e.message)}<br>` +
+      (lastNext!=null ? `<span class="small">Tiến trình đã lưu tới checkpoint. Để chạy tiếp, đặt <b>Index bắt đầu = ${lastNext}</b> rồi chạy lại (xem mục Checkpoints).</span><br>` : '') +
       `<span class="small">Gợi ý: nếu là <code>NetworkError</code>, kiểm tra log server (uvicorn) và bấm "Test LLM" để xem prompt nhỏ có chạy được không.</span>`);
     logLine('log-err', 'EXCEPTION: ' + e.message);
+    refreshCheckpoints();
   }finally{
     $('runBtn').disabled = false;
   }
@@ -332,7 +415,62 @@ $('reviewBtn').onclick = () => {
   }
 };
 
+// ---- Checkpoints ---------------------------------------------------------
+async function refreshCheckpoints(){
+  const wrap = $('ckptWrap');
+  try{
+    const data = await (await fetch('/api/checkpoints')).json();
+    const list = data.checkpoints || [];
+    if(!list.length){ wrap.innerHTML = '<div class="small" style="margin-top:10px">Chưa có checkpoint nào.</div>'; return; }
+    let html = '<table class="ckpt"><thead><tr><th>Run</th><th>Đã xử lý</th><th>next_index</th><th>Cập nhật</th><th></th></tr></thead><tbody>';
+    for(const c of list){
+      const sm = c.summary || {};
+      const procTxt = `${c.processed||0}${c.total!=null?'/'+c.total:''}${c.done?' ✓':''}`;
+      html += `<tr>`+
+        `<td><code>${esc(c.run_id)}</code><div class="small">${sm.terms!=null?sm.terms+' nhãn':''}${c.params&&c.params.dry_run?' · dry-run':''}</div></td>`+
+        `<td>${esc(procTxt)}</td>`+
+        `<td>${c.next_index!=null?esc(c.next_index):'-'}</td>`+
+        `<td class="small">${esc(c.updated_at||'')}</td>`+
+        `<td class="row" style="gap:6px">`+
+          `<button class="btn-mini" data-act="dl" data-id="${esc(c.run_id)}">Tải JSON</button>`+
+          `<button class="btn-mini" data-act="resume" data-next="${c.next_index!=null?esc(c.next_index):''}">Chạy tiếp</button>`+
+          `<button class="btn-mini" data-act="review" data-id="${esc(c.run_id)}">Trình gán nhãn</button>`+
+        `</td>`+
+      `</tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }catch(e){
+    wrap.innerHTML = '<div class="small" style="margin-top:10px">Không tải được danh sách checkpoint: ' + esc(e.message) + '</div>';
+  }
+}
+
+$('ckptWrap').onclick = async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if(!btn) return;
+  const act = btn.dataset.act;
+  if(act === 'dl'){
+    window.open('/api/checkpoints/' + encodeURIComponent(btn.dataset.id), '_blank');
+  }else if(act === 'resume'){
+    const next = btn.dataset.next;
+    if(next !== ''){ $('startIndex').value = next; }
+    $('endIndex').value = '';
+    window.scrollTo({top:0, behavior:'smooth'});
+    setStatus($('runStatus'), 'info', `Đã đặt Index bắt đầu = ${esc(next||'0')}. Chọn lại 2 file và bấm "Chạy phân giải" để tiếp tục.`);
+  }else if(act === 'review'){
+    try{
+      const data = await (await fetch('/api/checkpoints/' + encodeURIComponent(btn.dataset.id))).json();
+      localStorage.setItem('ar_documents', JSON.stringify(data.documents||[]));
+      localStorage.setItem('ar_dictionary', JSON.stringify(data.dictionary||{}));
+      location.href = '/labeler';
+    }catch(e){ alert('Không nạp được checkpoint: ' + e.message); }
+  }
+};
+
+$('refreshCkptBtn').onclick = refreshCheckpoints;
+
 loadConfig();
+refreshCheckpoints();
 </script>
 </body>
 </html>
