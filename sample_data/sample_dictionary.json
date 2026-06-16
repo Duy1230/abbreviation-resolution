@@ -1,0 +1,8 @@
+[
+  { "word": "TC", "type": "tên tàu/khac", "meaning": "Tàu cá/TC", "label": 1 },
+  { "word": "TP", "type": "địa danh/chức vụ", "meaning": "Thành phố/Trưởng phòng", "label": 1 },
+  { "word": "HCM", "type": "địa danh", "meaning": "Hồ Chí Minh", "label": 0 },
+  { "word": "HĐND", "type": "cơ quan", "meaning": "Hội đồng nhân dân", "label": 0 },
+  { "word": "BHYT", "type": "chính sách", "meaning": "Bảo hiểm y tế", "label": 0 },
+  { "word": "UBND", "type": "cơ quan", "meaning": "Ủy ban nhân dân", "label": 0 }
+]

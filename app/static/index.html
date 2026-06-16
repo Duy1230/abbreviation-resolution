@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Abbreviation Resolution — Tự động gán nghĩa bằng LLM</title>
+<style>
+:root{--bg:#f4f5f7;--panel:#fff;--fg:#15171a;--muted:#697077;--line:#e3e6ea;--soft:#f7f8fa;--accent:#b00020;--accent2:#ffe9ec;--ok:#198754;--okbg:#e8f7ee;--err:#b00020;--errbg:#ffeaec;--info:#0b79a5}
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;color:var(--fg);background:var(--bg)}
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+header h1{font-size:18px;margin:0}
+.small{font-size:12px;color:var(--muted)}
+.nav a{display:inline-block;text-decoration:none;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;font-weight:700;font-size:13px}
+main{max-width:920px;margin:22px auto;padding:0 18px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 4px}
+.step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;margin-right:8px}
+label{display:block;font-size:12px;font-weight:700;margin:12px 0 4px}
+input[type=text],input[type=number]{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;background:#fff;color:#111;font:inherit}
+input[type=file]{width:100%;font:inherit;margin-top:4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{border:1px solid var(--line);border-radius:8px;background:#fff;padding:9px 14px;cursor:pointer;font:inherit;font-weight:600}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:not-allowed}
+.checkbox{display:flex;align-items:center;gap:8px;margin-top:14px}
+.checkbox input{width:auto}
+.checkbox label{margin:0}
+.status{margin-top:12px;font-size:13px;padding:10px 12px;border-radius:8px;display:none}
+.status.show{display:block}
+.status.ok{background:var(--okbg);color:var(--ok)}
+.status.err{background:var(--errbg);color:var(--err)}
+.status.info{background:#eaf6fb;color:var(--info)}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:8px 0 14px}
+.stat{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:20px}
+.hidden{display:none}
+.hintbox{background:var(--soft);border:1px dashed var(--line);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);margin-top:10px}
+code{background:#eef0f2;padding:1px 5px;border-radius:4px}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Abbreviation Resolution</h1>
+    <div class="small">Tự động phân giải từ viết tắt bằng LLM (llama.cpp) và xuất dữ liệu tương thích trình gán nhãn.</div>
+  </div>
+  <div class="nav"><a href="/labeler">Mở trình gán nhãn →</a></div>
+</header>
+
+<main>
+  <div class="card">
+    <h2><span class="step">1</span>Tải dữ liệu</h2>
+    <div class="small">Văn bản thô (JSON list of dict, văn bản ở trường <code>input</code>) và từ điển viết tắt (JSON list, các trường <code>word/type/meaning/label</code>).</div>
+    <div class="grid2">
+      <div>
+        <label>File văn bản thô (.json)</label>
+        <input id="inputFile" type="file" accept=".json,application/json" />
+      </div>
+      <div>
+        <label>File từ điển viết tắt (.json)</label>
+        <input id="dictFile" type="file" accept=".json,application/json" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1;min-width:160px">
+        <label>Tên trường chứa văn bản</label>
+        <input id="textField" type="text" value="input" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step">2</span>Cấu hình LLM (llama.cpp)</h2>
+    <div class="small">Trỏ tới <code>llama-server</code> (OpenAI-compatible). Hoặc bật "Chạy thử" để xem pipeline mà không cần model.</div>
+    <div class="grid2">
+      <div>
+        <label>URL llama-server</label>
+        <input id="llamaUrl" type="text" placeholder="http://host.docker.internal:8080/v1" />
+      </div>
+      <div>
+        <label>Model</label>
+        <input id="model" type="text" placeholder="local-model" />
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label>Temperature</label>
+        <input id="temperature" type="number" value="0" min="0" max="2" step="0.1" />
+      </div>
+      <div class="checkbox">
+        <input id="dryRun" type="checkbox" />
+        <label for="dryRun">Chạy thử (dry-run, không gọi model — dùng heuristic)</label>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="checkBtn" type="button">Kiểm tra kết nối</button>
+    </div>
+    <div id="checkStatus" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step">3</span>Chạy phân giải</h2>
+    <div class="small">Mỗi văn bản chỉ gọi LLM một lần. Từ <b>label 0</b> gán trực tiếp; từ <b>label 1</b> để LLM chọn theo ngữ cảnh (hoặc "không nghĩa phù hợp").</div>
+    <div class="row" style="margin-top:12px">
+      <button id="runBtn" class="primary" type="button">Chạy phân giải</button>
+    </div>
+    <div id="runStatus" class="status"></div>
+  </div>
+
+  <div id="resultCard" class="card hidden">
+    <h2>Kết quả</h2>
+    <div class="stats">
+      <div class="stat"><b id="stDocs">0</b><span class="small">văn bản</span></div>
+      <div class="stat"><b id="stTerms">0</b><span class="small">nhãn</span></div>
+      <div class="stat"><b id="stDirect">0</b><span class="small">gán trực tiếp</span></div>
+      <div class="stat"><b id="stLlm">0</b><span class="small">LLM chọn</span></div>
+      <div class="stat"><b id="stNone">0</b><span class="small">không phù hợp</span></div>
+    </div>
+    <div class="row">
+      <button id="dlDocs" type="button">Tải labeled_documents.json</button>
+      <button id="dlDict" type="button">Tải dictionary.json</button>
+      <button id="reviewBtn" class="primary" type="button">Review &amp; sửa trong trình gán nhãn →</button>
+    </div>
+    <div class="hintbox">"Review &amp; sửa" sẽ mở trình gán nhãn với kết quả đã nạp sẵn để bạn kiểm tra, chỉnh và export lại.</div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastResult = null;
+
+function setStatus(el, type, html){
+  el.className = `status show ${type}`;
+  el.innerHTML = html;
+}
+function clearStatus(el){ el.className = 'status'; el.innerHTML=''; }
+
+async function loadConfig(){
+  try{
+    const cfg = await (await fetch('/api/config')).json();
+    if(!$('llamaUrl').value) $('llamaUrl').value = cfg.llama_server_url || '';
+    if(!$('model').value) $('model').value = cfg.llama_model || '';
+  }catch(e){ /* ignore, fields keep placeholders */ }
+}
+
+$('checkBtn').onclick = async () => {
+  const url = $('llamaUrl').value.trim();
+  setStatus($('checkStatus'), 'info', '<span class="spinner"></span>Đang kiểm tra...');
+  try{
+    const r = await (await fetch('/api/llm-check?llama_url=' + encodeURIComponent(url))).json();
+    if(r.ok){
+      const models = (r.models && r.models.length) ? ' · models: ' + r.models.join(', ') : '';
+      setStatus($('checkStatus'), 'ok', 'Kết nối OK: ' + r.url + models);
+    }else{
+      setStatus($('checkStatus'), 'err', 'Không kết nối được: ' + (r.error||'unknown'));
+    }
+  }catch(e){ setStatus($('checkStatus'), 'err', 'Lỗi: ' + e.message); }
+};
+
+$('runBtn').onclick = async () => {
+  const inputF = $('inputFile').files[0];
+  const dictF = $('dictFile').files[0];
+  if(!inputF || !dictF){ setStatus($('runStatus'),'err','Hãy chọn cả file văn bản và file từ điển.'); return; }
+
+  const fd = new FormData();
+  fd.append('input_file', inputF);
+  fd.append('dictionary_file', dictF);
+  fd.append('llama_url', $('llamaUrl').value.trim());
+  fd.append('model', $('model').value.trim());
+  fd.append('temperature', $('temperature').value || '0');
+  fd.append('dry_run', $('dryRun').checked ? 'true' : 'false');
+  fd.append('text_field', $('textField').value.trim() || 'input');
+
+  $('runBtn').disabled = true;
+  setStatus($('runStatus'), 'info', '<span class="spinner"></span>Đang phân giải (gọi LLM cho từng văn bản)...');
+  try{
+    const resp = await fetch('/api/resolve', { method:'POST', body: fd });
+    const data = await resp.json();
+    if(!resp.ok){ throw new Error(data.detail || ('HTTP ' + resp.status)); }
+    lastResult = data;
+    const s = data.summary || {};
+    $('stDocs').textContent = s.documents||0;
+    $('stTerms').textContent = s.terms||0;
+    $('stDirect').textContent = s.direct||0;
+    $('stLlm').textContent = s.llm||0;
+    $('stNone').textContent = s.none||0;
+    $('resultCard').classList.remove('hidden');
+    setStatus($('runStatus'), 'ok', 'Hoàn tất. Xem kết quả bên dưới.');
+    $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){
+    setStatus($('runStatus'), 'err', 'Thất bại: ' + e.message);
+  }finally{
+    $('runBtn').disabled = false;
+  }
+};
+
+function download(name, obj){
+  const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  URL.revokeObjectURL(a.href);
+}
+$('dlDocs').onclick = () => lastResult && download('labeled_documents.json', lastResult.documents);
+$('dlDict').onclick = () => lastResult && download('dictionary.json', lastResult.dictionary);
+$('reviewBtn').onclick = () => {
+  if(!lastResult) return;
+  try{
+    localStorage.setItem('ar_documents', JSON.stringify(lastResult.documents));
+    localStorage.setItem('ar_dictionary', JSON.stringify(lastResult.dictionary));
+    location.href = '/labeler';
+  }catch(e){
+    setStatus($('runStatus'),'err','Không lưu được để review (dữ liệu quá lớn cho localStorage). Hãy tải file và import thủ công trong trình gán nhãn.');
+  }
+};
+
+loadConfig();
+</script>
+</body>
+</html>

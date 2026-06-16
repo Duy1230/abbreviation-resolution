@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    image: epsilon1234/abbreviation-resolution:latest
+    container_name: abbreviation-resolution
+    ports:
+      - "8000:8000"
+    environment:
+      - LLAMA_SERVER_URL=${LLAMA_SERVER_URL:-http://host.docker.internal:8080/v1}
+      - LLAMA_MODEL=${LLAMA_MODEL:-local-model}
+      - LLAMA_TIMEOUT=${LLAMA_TIMEOUT:-120}
+      # - LLAMA_API_KEY=${LLAMA_API_KEY}
+    extra_hosts:
+      # Lets the container reach a llama-server running on the host machine.
+      - "host.docker.internal:host-gateway"
+
+  # Optional: run llama.cpp server alongside the app. Provide your own GGUF model.
+  # Uncomment and adjust, then set LLAMA_SERVER_URL=http://llama:8080/v1
+  #
+  # llama:
+  #   image: ghcr.io/ggml-org/llama.cpp:server
+  #   command: ["-m", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "-c", "8192"]
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./models:/models

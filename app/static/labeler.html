@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dictionary Document Labeler</title>
+<style>
+:root{--bg:#fff;--fg:#111;--muted:#666;--line:#ddd;--soft:#f7f7f7;--accent:#b00020;--accent2:#ffe9ec;--mark:#fff2a8;--mark2:#dff3ff}
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;color:var(--fg);background:var(--bg)}
+header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center;justify-content:space-between}
+h1{font-size:18px;margin:0}.small{font-size:12px;color:var(--muted)}
+main{display:grid;grid-template-columns:320px 1fr 360px;height:calc(100vh - 58px)}
+aside,.right{border-right:1px solid var(--line);padding:14px;overflow:auto}.right{border-right:0;border-left:1px solid var(--line)}
+.viewer{padding:14px;overflow:auto;background:#fff}.card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;background:#fff}
+label{display:block;font-size:12px;font-weight:700;margin:8px 0 4px}input,textarea,select,button{font:inherit}
+input[type=text],textarea,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;color:#111}textarea{min-height:86px;resize:vertical}
+button{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 10px;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.file-item{padding:8px;border:1px solid var(--line);border-radius:8px;margin:6px 0;cursor:pointer;background:#fff}.file-item.active{border-color:var(--accent);background:var(--accent2)}
+.doc-title{font-weight:700;margin-bottom:10px}.doc{white-space:pre-wrap;line-height:1.85;font-size:16px}.hit{background:var(--mark);border-bottom:2px solid #c9a400;border-radius:3px;padding:1px 2px;cursor:pointer}.hit.resolved{background:var(--mark2);border-bottom-color:#0b79a5}.hit.replace{background:#efe7ff;border-bottom-color:#6a3dbf}.hit.replace.resolved{background:#e8ffe8;border-bottom-color:#198754}.hit.selected{outline:2px solid var(--accent)}
+.meaning{display:inline-block;margin-left:4px;padding:0 6px;border-radius:999px;background:#eef7ff;border:1px solid #b8dfff;color:#064b6b;font-size:12px;line-height:1.35;vertical-align:middle}.sense{padding:8px;border:1px solid var(--line);border-radius:8px;margin:6px 0;cursor:pointer}.sense:hover{background:var(--soft)}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin:2px;font-size:12px;background:var(--soft);cursor:pointer}.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat{background:var(--soft);border-radius:8px;padding:8px}.stat b{display:block;font-size:18px}.danger{color:#b00020}
+.navlink{text-decoration:none;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:8px 10px;font-weight:700}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Dictionary Document Labeler</h1><div class="small">Gán nghĩa cho từ/cụm từ trong tài liệu, cập nhật ngược dictionary, export lại dữ liệu.</div></div>
+  <div class="toolbar"><a href="/" class="navlink">← Auto-resolve (LLM)</a><button onclick="exportDocuments()">Export documents JSON</button><button onclick="exportDictionary()">Export dictionary JSON</button><button onclick="exportReplaceRules()">Export replace JSON</button><button class="primary" onclick="exportAll()">Export all</button></div>
+</header>
+<main>
+  <aside>
+    <div class="card">
+      <label>Load file document (.txt, nhiều file)</label><input id="docInput" type="file" multiple accept=".txt,text/plain" />
+      <label>Load labeled documents (.json) — kết quả LLM</label><input id="docJsonInput" type="file" accept=".json,application/json" />
+      <label>Load dictionary (.json, có thể rỗng)</label><input id="dictInput" type="file" accept=".json,application/json" />
+      <label>Load regex find/replace (.json, optional)</label><input id="replaceInput" type="file" accept=".json,application/json" />
+      <div class="small" style="margin-top:8px">Dictionary có thể là <b>{}</b>. Replace rules có thể bỏ trống; một find có thể có nhiều replace. Nếu chỉ có 1 replace, hệ thống tự apply.</div>
+    </div>
+    <div class="card"><label>Thao tác document</label><div class="row" style="margin-top:8px"><button onclick="applyHighlight()">Tô màu lại</button><button onclick="clearLabels()">Xóa nhãn trong doc</button></div><div class="small" style="margin-top:8px">Regex wrap term được xử lý nội bộ, không hiển thị: nhận diện đầu câu, cạnh dấu câu, trong ngoặc vuông, quanh khoảng trắng; không match giữa một từ khác.</div></div>
+    <div class="card stats"><div class="stat"><b id="docCount">0</b><span class="small">documents</span></div><div class="stat"><b id="termCount">0</b><span class="small">terms</span></div><div class="stat"><b id="hitCount">0</b><span class="small">matches</span></div><div class="stat"><b id="labeledCount">0</b><span class="small">labeled</span></div></div>
+    <div class="card"><label>Danh sách document</label><div id="fileList"></div></div>
+  </aside>
+  <section class="viewer">
+    <div class="doc-title" id="docTitle">Chưa load document</div>
+    <div class="small">Click vào từ được tô màu để chọn/thêm nghĩa. Nếu trong dictionary từ đó chỉ có một nghĩa hoặc regex find chỉ có một replace, hệ thống tự annotate/apply.</div>
+    <div style="margin:10px 0" class="toolbar"><button onclick="addSelectedTextTerm()">Thêm từ đang bôi đen</button><button onclick="prevUnlabeled()">Tới từ chưa gán nghĩa</button></div>
+    <div id="docView" class="doc"></div>
+  </section>
+  <section class="right">
+    <div class="card"><div class="small">Đang chọn</div><h2 id="selectedTerm" style="font-size:18px;margin:6px 0">—</h2><div id="selectedMeta" class="small">Click một từ được tô màu.</div></div>
+    <div class="card"><label>Các nghĩa / replace hiện có</label><div id="senseList"></div></div>
+    <div class="card"><label>Thêm nghĩa/replace mới cho mục đang chọn</label><input id="newSenseLabel" type="text" placeholder="Nghĩa hoặc chuỗi replace" /><textarea id="newSenseExplanation" placeholder="Giải thích thêm (optional)"></textarea><button class="primary" onclick="addSenseToSelected()">Thêm & gán cho occurrence</button></div>
+    <div class="card"><label>Dictionary terms / Replace rules</label><input id="dictSearch" type="text" placeholder="Tìm term hoặc regex find..." oninput="renderDictTerms()" /><div id="dictTerms" style="margin-top:8px"></div></div>
+  </section>
+</main>
+<script>
+let documents=[]; // {name,text,labels:[...],replacements:[...]}
+let dictionary={}; // term -> [{id,label,explanation}], id dùng nội bộ, không hiển thị
+let replaceRules={}; // findRegex -> [{id,replace,explanation}], optional
+let currentDoc=0, matches=[], selected=null;
+const $=id=>document.getElementById(id);
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]))}
+function escJs(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n')}
+function slug(s){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||'item'}
+function normTerm(s){return String(s||'').trim().replace(/\s+/g,' ').toLocaleLowerCase('vi')}
+function escapeRegExp(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+function termToPattern(term){return escapeRegExp(term.trim()).replace(/\\\s+/g,'\\s+')}
+function canonicalTerm(matched){const n=normTerm(matched);return Object.keys(dictionary).find(t=>normTerm(t)===n)||matched}
+function download(name,data,type='application/json'){const blob=new Blob([data],{type});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href)}
+function normalizeDictionary(obj){const out={};for(const [term,val] of Object.entries(obj||{})){if(Array.isArray(val))out[term]=val.map((x,i)=>typeof x==='string'?{id:`${slug(term)}_${i+1}`,label:x,explanation:''}:{id:x.id||`${slug(term)}_${i+1}`,label:x.label||x.meaning||x.name||JSON.stringify(x),explanation:x.explanation||x.description||x.note||''});else if(typeof val==='string')out[term]=[{id:slug(term),label:val,explanation:''}];}return out}
+function normalizeReplaceRules(obj){const out={};for(const [find,val] of Object.entries(obj||{})){if(Array.isArray(val))out[find]=val.map((x,i)=>typeof x==='string'?{id:`${slug(find)}_${i+1}`,replace:x,explanation:''}:{id:x.id||`${slug(find)}_${i+1}`,replace:x.replace||x.to||x.value||'',explanation:x.explanation||x.description||x.note||''}).filter(x=>x.replace!==undefined);else if(typeof val==='string')out[find]=[{id:slug(find),replace:val,explanation:''}];}return out}
+function safeRegex(pattern,flags='giu'){try{return new RegExp(pattern,flags)}catch(e){return new RegExp(escapeRegExp(pattern),flags)}}
+function dictRegex(){const terms=Object.keys(dictionary).filter(t=>t&&t.trim()).sort((a,b)=>b.length-a.length).map(termToPattern);if(!terms.length)return null;return new RegExp(`(^|[^\\p{L}\\p{N}_])(${terms.join('|')})(?![\\p{L}\\p{N}_])`,'giu')}
+function makeLabel(doc,start,end,term,sense,auto=false){return{start,end,term,senseId:sense.id,senseLabel:sense.label,senseExplanation:sense.explanation||'',text:doc.text.slice(start,end),auto}}
+function makeReplacement(doc,start,end,find,choice){return{start,end,find,replaceId:choice.id,replace:choice.replace,explanation:choice.explanation||'',text:doc.text.slice(start,end)}}
+
+docInput.onchange=async e=>{const files=[...e.target.files];documents=await Promise.all(files.map(async f=>({name:f.name,text:await f.text(),labels:[],replacements:[]})));currentDoc=0;selected=null;renderAll()};
+docJsonInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;try{loadDocuments(JSON.parse(await f.text()))}catch(err){alert('JSON không hợp lệ: '+err.message)}};
+dictInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;dictionary=normalizeDictionary(JSON.parse(await f.text()));selected=null;renderAll()};
+replaceInput.onchange=async e=>{const f=e.target.files[0];if(!f)return;replaceRules=normalizeReplaceRules(JSON.parse(await f.text()));selected=null;renderAll()};
+function loadDocuments(data){const docs=Array.isArray(data)?data:((data&&data.documents)||[]);documents=docs.map(d=>({name:d.name||'doc',text:d.text||'',labels:Array.isArray(d.labels)?d.labels:[],replacements:Array.isArray(d.replacements)?d.replacements:[],meta:d.meta}));currentDoc=0;selected=null;renderAll()}
+function renderAll(){renderFileList();applyHighlight();renderDictTerms();updateStats()}
+function renderFileList(){fileList.innerHTML=documents.map((d,i)=>`<div class="file-item ${i===currentDoc?'active':''}" onclick="currentDoc=${i};selected=null;applyHighlight();renderFileList()"><b>${esc(d.name)}</b><div class="small">${d.text.length} ký tự · ${d.labels.length} nhãn · ${(d.replacements||[]).length} replace</div></div>`).join('')||'<div class="small">Chưa có file</div>'}
+function collectItems(doc){const items=[];let re,m,guard=0;re=dictRegex();if(re){while((m=re.exec(doc.text))&&guard++<50000){const prefix=m[1]||'',raw=m[2]||'';const start=m.index+prefix.length,end=start+raw.length;const term=canonicalTerm(raw);let label=doc.labels.find(x=>x.start===start&&x.end===end);const senses=dictionary[term]||[];if(!label&&senses.length===1){label=makeLabel(doc,start,end,term,senses[0],true);doc.labels.push(label)}items.push({type:'dict',term:raw,dictTerm:term,start,end,label});if(re.lastIndex===m.index)re.lastIndex++}}
+  for(const find of Object.keys(replaceRules)){re=safeRegex(find,'giu');guard=0;while((m=re.exec(doc.text))&&guard++<50000){const raw=m[0];if(!raw)break;const start=m.index,end=start+raw.length;const choices=replaceRules[find]||[];let picked=(doc.replacements||[]).find(x=>x.start===start&&x.end===end&&x.find===find);if(!picked&&choices.length===1){picked=makeReplacement(doc,start,end,find,choices[0]);doc.replacements.push(picked)}items.push({type:'replace',term:raw,find,start,end,picked});if(re.lastIndex===m.index)re.lastIndex++}}
+  items.sort((a,b)=>a.start-b.start || (b.end-b.start)-(a.end-a.start));const filtered=[],occupied=[];for(const it of items){if(occupied.some(o=>!(it.end<=o.start||it.start>=o.end)))continue;filtered.push(it);occupied.push({start:it.start,end:it.end})}return filtered}
+function applyHighlight(){if(!documents.length){docTitle.textContent='Chưa load document';docView.innerHTML='';updateStats();return}const doc=documents[currentDoc];doc.replacements ||= [];docTitle.textContent=doc.name;matches=collectItems(doc);let html='',last=0;matches.forEach((it,idx)=>{html+=esc(doc.text.slice(last,it.start));const resolved=it.type==='dict'?it.label:it.picked;const cls=`hit ${it.type==='replace'?'replace':''} ${resolved?'resolved':''}`;const side=it.type==='dict'&&it.label?`<span class="meaning">${esc(it.label.senseLabel)}</span>`:it.type==='replace'&&it.picked?`<span class="meaning">→ ${esc(it.picked.replace)}</span>`:'';html+=`<span class="${cls}" data-idx="${idx}" title="${esc(resolved?(it.type==='dict'?it.label.senseLabel:it.picked.replace):'Chưa chọn')}">${esc(doc.text.slice(it.start,it.end))}${side}</span>`;last=it.end});html+=esc(doc.text.slice(last));docView.innerHTML=html;document.querySelectorAll('.hit').forEach(el=>el.onclick=()=>selectMatch(Number(el.dataset.idx),el));updateStats();renderFileList()}
+function selectMatch(idx,el){document.querySelectorAll('.hit.selected').forEach(x=>x.classList.remove('selected'));el.classList.add('selected');selected={idx,...matches[idx],element:el};renderSelected()}
+function renderSelected(){if(!selected){selectedTerm.textContent='—';selectedMeta.textContent='Click một từ được tô màu.';senseList.innerHTML='';return}selectedTerm.textContent=selected.term;selectedMeta.textContent=`${selected.type==='replace'?'Regex replace':'Dictionary'} · vị trí ${selected.start}-${selected.end}`;if(selected.type==='replace'){const choices=replaceRules[selected.find]||[];senseList.innerHTML=choices.length?choices.map(c=>`<div class="sense" onclick="assignReplace('${escJs(c.id)}','${escJs(c.replace)}','${escJs(c.explanation||'')}')"><b>→ ${esc(c.replace)}</b>${c.explanation?`<div class="small">${esc(c.explanation)}</div>`:''}</div>`).join(''):'<div class="small">Chưa có replace. Hãy thêm replace mới.</div>';newSenseLabel.placeholder=`Replace cho “${selected.term}”`;return}
+ const senses=dictionary[selected.dictTerm||selected.term]||[];senseList.innerHTML=senses.length?senses.map(s=>`<div class="sense" onclick="assignSense('${escJs(s.id)}','${escJs(s.label)}','${escJs(s.explanation||'')}')"><b>${esc(s.label)}</b>${s.explanation?`<div class="small">${esc(s.explanation)}</div>`:''}</div>`).join(''):'<div class="small">Chưa có nghĩa. Hãy thêm nghĩa mới.</div>';newSenseLabel.placeholder=`Nghĩa mới cho “${selected.term}”`}
+function assignSense(id,label,explanation=''){if(!selected)return;const doc=documents[currentDoc];const old=doc.labels.findIndex(x=>x.start===selected.start&&x.end===selected.end);const item=makeLabel(doc,selected.start,selected.end,selected.dictTerm||selected.term,{id,label,explanation},false);if(old>=0)doc.labels[old]=item;else doc.labels.push(item);applyHighlight();renderDictTerms()}
+function assignReplace(id,replace,explanation=''){if(!selected)return;const doc=documents[currentDoc];doc.replacements ||= [];const old=doc.replacements.findIndex(x=>x.start===selected.start&&x.end===selected.end&&x.find===selected.find);const item=makeReplacement(doc,selected.start,selected.end,selected.find,{id,replace,explanation});if(old>=0)doc.replacements[old]=item;else doc.replacements.push(item);applyHighlight();renderDictTerms()}
+function addSenseToSelected(){if(!selected)return alert('Chưa chọn mục.');const label=newSenseLabel.value.trim();if(!label)return alert('Nhập nghĩa hoặc replace.');const explanation=newSenseExplanation.value.trim();if(selected.type==='replace'){replaceRules[selected.find] ||= [];let c=replaceRules[selected.find].find(x=>x.replace===label&&(x.explanation||'')===explanation);if(!c){c={id:`${slug(selected.find)}_${Date.now()}`,replace:label,explanation};replaceRules[selected.find].push(c)}newSenseLabel.value='';newSenseExplanation.value='';assignReplace(c.id,c.replace,c.explanation);return}
+ const termKey=selected.dictTerm||selected.term;dictionary[termKey] ||= [];let sense=dictionary[termKey].find(s=>s.label===label&&(s.explanation||'')===explanation);if(!sense){sense={id:`${slug(termKey)}_${Date.now()}`,label,explanation};dictionary[termKey].push(sense)}newSenseLabel.value='';newSenseExplanation.value='';assignSense(sense.id,sense.label,sense.explanation);renderAll()}
+function addSelectedTextTerm(){const sel=window.getSelection();const term=String(sel).trim().replace(/\s+/g,' ');if(!term)return alert('Hãy bôi đen một từ/cụm từ trong văn bản.');dictionary[term] ||= [];applyHighlight();renderDictTerms();updateStats();const target=[...document.querySelectorAll('.hit')].find(x=>normTerm(x.childNodes[0]?.textContent||x.textContent)===normTerm(term));if(target){target.scrollIntoView({behavior:'smooth',block:'center'});target.click()}newSenseLabel.focus();newSenseLabel.placeholder=`Nhập nghĩa mới cho “${term}”`}
+function prevUnlabeled(){const el=[...document.querySelectorAll('.hit')].find(x=>!x.classList.contains('resolved'));if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.click()}}
+function clearLabels(){if(!documents.length)return;if(confirm('Xóa toàn bộ nhãn và replace của document hiện tại?')){documents[currentDoc].labels=[];documents[currentDoc].replacements=[];applyHighlight();renderFileList()}}
+function renderDictTerms(){const q=dictSearch?.value?.toLowerCase()||'';const terms=Object.keys(dictionary).filter(t=>t.toLowerCase().includes(q)).sort();const reps=Object.keys(replaceRules).filter(t=>t.toLowerCase().includes(q)).sort();dictTerms.innerHTML=(terms.slice(0,160).map(t=>`<div class="pill" onclick="scrollToTerm('${escJs(t)}')">${esc(t)} (${dictionary[t].length})</div>`).join('')+reps.slice(0,160).map(t=>`<div class="pill" onclick="scrollToReplace('${escJs(t)}')">regex: ${esc(t)} (${replaceRules[t].length})</div>`).join(''))||'<div class="small">Dictionary và replace rules rỗng.</div>';termCount.textContent=Object.keys(dictionary).length}
+function scrollToTerm(t){const el=[...document.querySelectorAll('.hit:not(.replace)')].find(x=>normTerm(x.childNodes[0]?.textContent||x.textContent)===normTerm(t));if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.click()}}
+function scrollToReplace(find){const item=matches.find(m=>m.type==='replace'&&m.find===find);if(item){const el=document.querySelector(`.hit[data-idx="${matches.indexOf(item)}"]`);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.click()}}}
+function updateStats(){docCount.textContent=documents.length;termCount.textContent=Object.keys(dictionary).length;hitCount.textContent=matches.length;labeledCount.textContent=documents.reduce((a,d)=>a+d.labels.length+(d.replacements||[]).length,0)}
+function exportDocuments(){download('labeled_documents.json',JSON.stringify(documents,null,2))}
+function exportDictionary(){download('dictionary.json',JSON.stringify(dictionary,null,2))}
+function exportReplaceRules(){download('replace_rules.json',JSON.stringify(replaceRules,null,2))}
+function exportAll(){download('dictionary_labeling_export.json',JSON.stringify({documents,dictionary,replaceRules,exportedAt:new Date().toISOString()},null,2))}
+renderAll();
+(function(){try{const d=localStorage.getItem('ar_documents');const dict=localStorage.getItem('ar_dictionary');let changed=false;if(dict){dictionary=normalizeDictionary(JSON.parse(dict));changed=true}if(d){loadDocuments(JSON.parse(d));changed=true}if(changed){renderAll()}localStorage.removeItem('ar_documents');localStorage.removeItem('ar_dictionary')}catch(e){console.warn('handoff failed',e)}})();
+</script>
+</body>
+</html>
