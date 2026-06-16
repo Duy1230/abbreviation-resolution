@@ -13,10 +13,14 @@ for unit tests and for the UI "dry-run" mode (no model required).
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "Bạn là chuyên gia phân giải (disambiguation) từ viết tắt tiếng Việt. "
@@ -142,12 +146,20 @@ class LLMClient:
         api_key: str | None = None,
         timeout: float = 120.0,
         temperature: float = 0.0,
+        trust_env: bool = False,
+        connect_timeout: float = 10.0,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.model = model or "local-model"
         self.api_key = api_key
         self.timeout = timeout
         self.temperature = temperature
+        # trust_env=False makes httpx ignore HTTP(S)_PROXY / NO_PROXY / NETRC from the
+        # environment. A corporate proxy exported via these vars is a very common reason
+        # an internal llama-server is reachable by curl but hangs from httpx. Keep it OFF
+        # unless the model truly must be reached through a proxy (LLAMA_TRUST_ENV=1).
+        self.trust_env = trust_env
+        self.connect_timeout = connect_timeout
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -155,15 +167,38 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _timeout(self) -> httpx.Timeout:
+        # Cap the connect phase so an unreachable host / stuck proxy fails fast instead
+        # of blocking for the full (possibly very large) read timeout.
+        connect = min(self.connect_timeout, self.timeout) if self.timeout else self.connect_timeout
+        return httpx.Timeout(self.timeout, connect=connect)
+
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
-        response = httpx.post(url, json=payload, headers=self._headers(), timeout=self.timeout)
-        response.raise_for_status()
-        return response.json()
+        body = json.dumps(payload, ensure_ascii=False)
+        timeout = self._timeout()
+        logger.info(
+            "POST %s | bytes=%d | model=%s | connect=%.1fs read=%.1fs | trust_env=%s",
+            url, len(body.encode("utf-8")), payload.get("model"),
+            timeout.connect or 0.0, timeout.read or 0.0, self.trust_env,
+        )
+        t0 = time.monotonic()
+        with httpx.Client(trust_env=self.trust_env, timeout=timeout) as client:
+            response = client.post(url, content=body, headers=self._headers())
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "POST %s -> HTTP %d in %.2fs (response bytes=%d)",
+                url, response.status_code, elapsed, len(response.content),
+            )
+            response.raise_for_status()
+            return response.json()
 
     def resolve(self, text: str, items: list[dict[str, Any]]) -> dict[str, int]:
         if not items:
             return {}
+
+        words = [it["word"] for it in items]
+        logger.info("LLM resolve %d ambiguous word(s): %s", len(items), words)
 
         messages = build_messages(text, items)
         schema = build_schema()
@@ -175,29 +210,45 @@ class LLMClient:
 
         # Try progressively more permissive structured-output modes for broad
         # llama.cpp version compatibility.
-        response_formats: list[dict[str, Any] | None] = [
-            {
-                "type": "json_schema",
-                "json_schema": {"name": "abbr_resolution", "schema": schema, "strict": True},
-            },
-            {"type": "json_object"},
-            None,
+        response_formats: list[tuple[str, dict[str, Any] | None]] = [
+            (
+                "json_schema",
+                {
+                    "type": "json_schema",
+                    "json_schema": {"name": "abbr_resolution", "schema": schema, "strict": True},
+                },
+            ),
+            ("json_object", {"type": "json_object"}),
+            ("none", None),
         ]
 
         last_error: Exception | None = None
-        for response_format in response_formats:
+        for mode, response_format in response_formats:
             payload = dict(base_payload)
             if response_format is not None:
                 payload["response_format"] = response_format
             try:
                 data = self._post(payload)
                 content = data["choices"][0]["message"]["content"]
-                return parse_resolutions(content, items)
+                result = parse_resolutions(content, items)
+                logger.info("LLM resolve OK (response_format=%s) -> %s", mode, result)
+                return result
             except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
                 last_error = exc
+                logger.warning(
+                    "LLM resolve failed (response_format=%s): %s: %s",
+                    mode, type(exc).__name__, exc,
+                )
+                # Network-layer errors (timeout, connect refused, read error)
+                # won't change between response_format modes — fail fast.
+                if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
+                    break
                 continue
 
-        raise LLMError(f"Gọi LLM thất bại: {last_error}")
+        raise LLMError(
+            f"Gọi LLM thất bại sau khi thử các response_format. "
+            f"Lỗi cuối: {type(last_error).__name__}: {last_error}"
+        )
 
 
 class MockLLMClient:
@@ -238,12 +289,28 @@ class MockLLMClient:
         return result
 
 
-def check_connection(base_url: str, api_key: str | None = None, timeout: float = 10.0) -> dict[str, Any]:
-    """Lightweight reachability check against ``{base_url}/models``."""
+def check_connection(
+    base_url: str,
+    api_key: str | None = None,
+    timeout: float = 10.0,
+    trust_env: bool = False,
+) -> dict[str, Any]:
+    """Lightweight reachability check against ``{base_url}/models``.
+
+    ``trust_env=False`` (default) makes httpx ignore HTTP(S)_PROXY/NO_PROXY/NETRC
+    from the environment — same defensive choice as ``LLMClient``, since a
+    corporate proxy exported via env vars is a frequent reason an internal
+    server is reachable by curl but hangs from httpx.
+    """
     url = f"{(base_url or '').rstrip('/')}/models"
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    response = httpx.get(url, headers=headers, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
+    logger.info("GET %s | timeout=%.1fs | trust_env=%s", url, timeout, trust_env)
+    t0 = time.monotonic()
+    with httpx.Client(trust_env=trust_env, timeout=timeout) as client:
+        response = client.get(url, headers=headers)
+        elapsed = time.monotonic() - t0
+        logger.info("GET %s -> HTTP %d in %.2fs", url, response.status_code, elapsed)
+        response.raise_for_status()
+        return response.json()

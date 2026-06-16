@@ -40,6 +40,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 code{background:#eef0f2;padding:1px 5px;border-radius:4px}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+.progress{margin-top:12px;background:var(--soft);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.progress-bar{height:6px;background:var(--accent);width:0;transition:width .2s ease}
+.log{margin-top:10px;max-height:240px;overflow:auto;background:#0f1419;color:#d8e1ea;border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap}
+.log-ok{color:#7ddc9f}.log-err{color:#ff8a8a}.log-warn{color:#ffcd5a}.log-muted{color:#7e8b96}
 </style>
 </head>
 <body>
@@ -98,6 +102,7 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
     </div>
     <div class="row" style="margin-top:14px">
       <button id="checkBtn" type="button">Kiểm tra kết nối</button>
+      <button id="testLlmBtn" type="button">Test LLM (gọi 1 prompt nhỏ)</button>
     </div>
     <div id="checkStatus" class="status"></div>
   </div>
@@ -109,6 +114,8 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
       <button id="runBtn" class="primary" type="button">Chạy phân giải</button>
     </div>
     <div id="runStatus" class="status"></div>
+    <div id="runProgressWrap" class="progress hidden"><div id="runProgressBar" class="progress-bar"></div></div>
+    <div id="runLog" class="log hidden"></div>
   </div>
 
   <div id="resultCard" class="card hidden">
@@ -131,13 +138,26 @@ code{background:#eef0f2;padding:1px 5px;border-radius:4px}
 
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 let lastResult = null;
 
 function setStatus(el, type, html){
   el.className = `status show ${type}`;
   el.innerHTML = html;
 }
-function clearStatus(el){ el.className = 'status'; el.innerHTML=''; }
+function logLine(cls, text){
+  const log = $('runLog');
+  log.classList.remove('hidden');
+  const ts = new Date().toLocaleTimeString();
+  log.insertAdjacentHTML('beforeend', `<div class="${cls}">[${ts}] ${esc(text)}</div>`);
+  log.scrollTop = log.scrollHeight;
+}
+function setProgress(done, total){
+  const wrap = $('runProgressWrap');
+  wrap.classList.remove('hidden');
+  const pct = total > 0 ? Math.min(100, Math.round(done/total*100)) : 0;
+  $('runProgressBar').style.width = pct + '%';
+}
 
 async function loadConfig(){
   try{
@@ -149,17 +169,58 @@ async function loadConfig(){
 
 $('checkBtn').onclick = async () => {
   const url = $('llamaUrl').value.trim();
-  setStatus($('checkStatus'), 'info', '<span class="spinner"></span>Đang kiểm tra...');
+  setStatus($('checkStatus'), 'info', '<span class="spinner"></span>Đang kiểm tra /v1/models...');
   try{
     const r = await (await fetch('/api/llm-check?llama_url=' + encodeURIComponent(url))).json();
     if(r.ok){
       const models = (r.models && r.models.length) ? ' · models: ' + r.models.join(', ') : '';
-      setStatus($('checkStatus'), 'ok', 'Kết nối OK: ' + r.url + models);
+      setStatus($('checkStatus'), 'ok', 'GET /v1/models OK: ' + r.url + models);
     }else{
       setStatus($('checkStatus'), 'err', 'Không kết nối được: ' + (r.error||'unknown'));
     }
   }catch(e){ setStatus($('checkStatus'), 'err', 'Lỗi: ' + e.message); }
 };
+
+$('testLlmBtn').onclick = async () => {
+  setStatus($('checkStatus'), 'info', '<span class="spinner"></span>Đang gửi 1 prompt nhỏ tới /v1/chat/completions...');
+  const fd = new FormData();
+  fd.append('llama_url', $('llamaUrl').value.trim());
+  fd.append('model', $('model').value.trim());
+  try{
+    const r = await (await fetch('/api/test-llm', { method:'POST', body: fd })).json();
+    if(r.ok){
+      setStatus($('checkStatus'), 'ok',
+        `POST /v1/chat/completions OK trong ${r.elapsed_ms} ms · model=${esc(r.model)}<br>` +
+        `Phản hồi: <code>${esc((r.content_preview||'').slice(0,200))}</code>`);
+    }else{
+      setStatus($('checkStatus'), 'err',
+        `Test LLM thất bại sau ${r.elapsed_ms} ms · <b>${esc(r.error_type||'Error')}</b><br>` +
+        esc(r.error||'unknown'));
+    }
+  }catch(e){ setStatus($('checkStatus'), 'err', 'Lỗi: ' + e.message); }
+};
+
+async function consumeNdjsonStream(resp, onEvent){
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  while(true){
+    const { value, done } = await reader.read();
+    if(done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while((nl = buf.indexOf('\n')) >= 0){
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if(!line) continue;
+      let ev;
+      try{ ev = JSON.parse(line); }catch(_){ continue; }
+      onEvent(ev);
+    }
+  }
+  buf = buf.trim();
+  if(buf){ try{ onEvent(JSON.parse(buf)); }catch(_){ /* ignore tail garbage */ } }
+}
 
 $('runBtn').onclick = async () => {
   const inputF = $('inputFile').files[0];
@@ -176,23 +237,77 @@ $('runBtn').onclick = async () => {
   fd.append('text_field', $('textField').value.trim() || 'input');
 
   $('runBtn').disabled = true;
-  setStatus($('runStatus'), 'info', '<span class="spinner"></span>Đang phân giải (gọi LLM cho từng văn bản)...');
+  $('runLog').innerHTML = '';
+  $('runLog').classList.remove('hidden');
+  $('runProgressBar').style.width = '0';
+  $('runProgressWrap').classList.remove('hidden');
+  setStatus($('runStatus'), 'info', '<span class="spinner"></span>Đang gửi request...');
+
+  let total = 0, doneCount = 0, errCount = 0, finalResult = null, fatal = null;
   try{
     const resp = await fetch('/api/resolve', { method:'POST', body: fd });
-    const data = await resp.json();
-    if(!resp.ok){ throw new Error(data.detail || ('HTTP ' + resp.status)); }
-    lastResult = data;
-    const s = data.summary || {};
+    if(!resp.ok){
+      let detail;
+      try{ const j = await resp.json(); detail = j.detail || JSON.stringify(j); }
+      catch(_){ detail = await resp.text(); }
+      throw new Error(`HTTP ${resp.status}: ${detail}`);
+    }
+    if(!resp.body){ throw new Error('Trình duyệt không hỗ trợ streaming response.'); }
+
+    await consumeNdjsonStream(resp, ev => {
+      switch(ev.event){
+        case 'start':
+          total = ev.total || 0;
+          logLine('log-muted', `Bắt đầu: ${total} văn bản · ${ev.dictionary_words} từ trong dictionary (${ev.ambiguous_words} nhập nhằng)${ev.dry_run ? ' · DRY-RUN' : ''}`);
+          setStatus($('runStatus'), 'info', `<span class="spinner"></span>Đang xử lý 0/${total}...`);
+          break;
+        case 'document_start':
+          logLine('log-muted', `→ ${ev.index}/${ev.total} ${ev.name} (${ev.text_len} ký tự)`);
+          setStatus($('runStatus'), 'info', `<span class="spinner"></span>Đang xử lý ${ev.index}/${ev.total}: ${esc(ev.name)}...`);
+          break;
+        case 'document_done':
+          doneCount = ev.index;
+          setProgress(doneCount, total);
+          logLine('log-ok', `   ${ev.name} ✓ ${ev.labels} nhãn (direct=${ev.direct} llm=${ev.llm} none=${ev.none}) trong ${ev.elapsed_ms} ms`);
+          break;
+        case 'document_error':
+          errCount++;
+          doneCount = ev.index;
+          setProgress(doneCount, total);
+          logLine('log-err', `   ${ev.name} ✗ ${ev.error_type||'Error'}: ${ev.error}`);
+          break;
+        case 'done':
+          finalResult = ev;
+          logLine('log-ok', `Hoàn tất: ${ev.summary.documents} văn bản · ${ev.summary.terms} nhãn (direct=${ev.summary.direct} llm=${ev.summary.llm} none=${ev.summary.none})`);
+          break;
+        case 'fatal':
+          fatal = ev;
+          logLine('log-err', `FATAL ${ev.error_type||''}: ${ev.error}`);
+          break;
+      }
+    });
+
+    if(fatal){ throw new Error(`${fatal.error_type||'Fatal'}: ${fatal.error}`); }
+    if(!finalResult){ throw new Error('Stream kết thúc nhưng không nhận được event "done".'); }
+
+    lastResult = { documents: finalResult.documents, dictionary: finalResult.dictionary, summary: finalResult.summary };
+    const s = finalResult.summary || {};
     $('stDocs').textContent = s.documents||0;
     $('stTerms').textContent = s.terms||0;
     $('stDirect').textContent = s.direct||0;
     $('stLlm').textContent = s.llm||0;
     $('stNone').textContent = s.none||0;
     $('resultCard').classList.remove('hidden');
-    setStatus($('runStatus'), 'ok', 'Hoàn tất. Xem kết quả bên dưới.');
+    const okMsg = errCount > 0
+      ? `Hoàn tất với ${errCount} văn bản lỗi (xem log bên dưới). Xem kết quả ở phần dưới.`
+      : 'Hoàn tất. Xem kết quả bên dưới.';
+    setStatus($('runStatus'), errCount > 0 ? 'info' : 'ok', okMsg);
     $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
   }catch(e){
-    setStatus($('runStatus'), 'err', 'Thất bại: ' + e.message);
+    setStatus($('runStatus'), 'err',
+      `Thất bại: ${esc(e.message)}<br>` +
+      `<span class="small">Gợi ý: nếu là <code>NetworkError</code>, kiểm tra log server (uvicorn) và bấm "Test LLM" để xem prompt nhỏ có chạy được không.</span>`);
+    logLine('log-err', 'EXCEPTION: ' + e.message);
   }finally{
     $('runBtn').disabled = false;
   }

@@ -15,10 +15,14 @@ Output is shaped to be 100% compatible with ``dictionary_labeler_v4.html``:
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 # Label shown when the LLM decides none of the candidate meanings fit.
 NONE_LABEL = "(không có nghĩa phù hợp)"
@@ -247,7 +251,12 @@ def resolve_document(
         if llm_client is None:
             raise ValueError("Có từ nhập nhằng nhưng không cung cấp llm_client.")
         items = [{"word": w, "senses": by_word[w].senses} for w in ambiguous_words]
+        t0 = time.monotonic()
         resolutions = llm_client.resolve(text, items) or {}
+        logger.info(
+            "resolve_document: %d ambiguous word(s) resolved in %.2fs",
+            len(items), time.monotonic() - t0,
+        )
 
     labels: list[dict[str, Any]] = []
     for start, end, word in occurrences:
@@ -285,6 +294,11 @@ def resolve_documents(
     """
     entries, by_word = parse_dictionary(dictionary_entries)
     ui_dictionary = build_ui_dictionary(entries)
+    total = len(input_records or [])
+    logger.info(
+        "resolve_documents: %d document(s), %d dictionary words (%d ambiguous)",
+        total, len(by_word), sum(1 for e in entries if e.is_ambiguous),
+    )
 
     documents: list[dict[str, Any]] = []
     summary = {"documents": 0, "terms": 0, "direct": 0, "llm": 0, "none": 0}

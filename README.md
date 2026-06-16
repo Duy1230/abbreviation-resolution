@@ -139,13 +139,88 @@ với dữ liệu mẫu, bật "Chạy thử" trên giao diện và tải `sampl
 
 ```
 app/
-  main.py          FastAPI: routes + API
+  main.py          FastAPI: routes + streaming /api/resolve + /api/test-llm
   resolver.py      Logic cốt lõi (tách token, match, gán nhãn) — thuần Python
-  llm_client.py    Client llama-server + MockLLMClient + prompt/schema
+  llm_client.py    Client llama-server + MockLLMClient + prompt/schema + logging
   static/
-    index.html     Trang Auto-resolve (upload + chạy LLM)
+    index.html     Trang Auto-resolve (upload + chạy LLM + progress streaming)
     labeler.html   Trình gán nhãn (bản gốc + nút Import + bàn giao localStorage)
 sample_data/       Dữ liệu mẫu để thử
 tests/             pytest
 Dockerfile, docker-compose.yml
 ```
+
+---
+
+## Streaming protocol (cho người tự tích hợp API)
+
+`POST /api/resolve` trả `application/x-ndjson` — mỗi dòng là một JSON event:
+
+```jsonc
+{"event":"start",          "total":3, "dictionary_words":6, "ambiguous_words":2, "dry_run":false}
+{"event":"document_start", "index":1, "total":3, "name":"doc1", "text_len":144}
+{"event":"document_done",  "index":1, "total":3, "name":"doc1",
+                           "labels":5, "direct":3, "llm":2, "none":0, "elapsed_ms":2310}
+{"event":"document_error", "index":2, "total":3, "name":"doc2",
+                           "error_type":"LLMError", "error":"..."}
+{"event":"done", "documents":[...], "dictionary":{...},
+                 "summary":{"documents":3,"terms":9,"direct":6,"llm":3,"none":0}}
+{"event":"fatal", "error_type":"...", "error":"..."}      // chỉ khi stream chết toàn cục
+```
+
+Vì sao streaming? Một request resolve có thể mất nhiều phút khi LLM chậm. Với
+JSON buffered (chế độ cũ), proxy/firewall doanh nghiệp thường reset connection
+POST đang idle → browser nhận `NetworkError`. Streaming 1 event/văn bản giữ
+luồng byte chảy liên tục và đồng thời cho UI biết tiến trình thật.
+
+---
+
+## Troubleshooting
+
+### "NetworkError when attempting to fetch resource" khi bấm "Chạy phân giải"
+
+Phổ biến trong môi trường doanh nghiệp; bạn cần kiểm tra theo thứ tự:
+
+1. **Xem log uvicorn**. Phiên bản từ `1.1.0` log mọi request tới LLM kèm timing:
+   ```
+   [app.llm_client] INFO: POST http://.../v1/chat/completions | bytes=1843 | model=qwen3.6 | connect=10.0s read=120.0s | trust_env=False
+   [app.llm_client] INFO: POST http://.../v1/chat/completions -> HTTP 200 in 12.34s
+   ```
+   Nếu không thấy log "-> HTTP ..." → LLM chưa trả về (hang / quá chậm).
+2. **Bấm "Test LLM" trên giao diện** (hoặc `POST /api/test-llm`). Endpoint này
+   gửi prompt nhỏ nhất qua cùng `httpx.Client` mà pipeline thật dùng:
+   - Trả về OK + `elapsed_ms` → LLM healthy; vấn đề là prompt thật chậm hoặc
+     proxy/firewall reset connection dài. Streaming (đã bật mặc định) thường
+     đã giải quyết.
+   - Trả về lỗi `ConnectError`/`ConnectTimeout` → app không vào được LLM (
+     khác với curl từ máy bạn): kiểm tra `LLAMA_SERVER_URL`, DNS trong
+     container, proxy env.
+3. **Bypass proxy doanh nghiệp**. `LLMClient` đặt `trust_env=False` để
+   **bỏ qua** `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` của môi trường — đây là
+   nguyên nhân kinh điển khiến "curl OK mà Python hang". Nếu bạn THỰC SỰ
+   cần qua proxy, sửa code (`trust_env=True`) hoặc đặt `NO_PROXY=192.168.*`.
+4. **Tăng `LLAMA_TIMEOUT`** nếu model chậm (mặc định 120s, nên đặt 300-600s
+   cho model lớn).
+5. **Tăng nhẹ keep-alive trong UI**: streaming đã đẩy 1 dòng/văn bản nên
+   connection không bao giờ idle quá thời gian xử lý 1 văn bản. Nếu vẫn bị
+   reset, có thể proxy reset cả connection có data mà response chưa đóng → cần
+   liên hệ team mạng để whitelist.
+
+### "Kiểm tra kết nối" OK nhưng "Chạy phân giải" hỏng
+
+Hai endpoint dùng đường HTTP khác nhau ở phía LLM:
+`/v1/models` (nhỏ, nhanh) vs `/v1/chat/completions` (lớn, chậm). Vậy nên
+"Kiểm tra kết nối" pass không đảm bảo chat hoạt động. **Hãy luôn bấm "Test LLM"
+trước khi chạy real workload.**
+
+### `Ctrl + C` không thoát uvicorn
+
+Uvicorn graceful shutdown đợi mọi request đang chạy xong. Khi LLM treo, request
+kẹt đến hết `LLAMA_TIMEOUT`. Bấm **`Ctrl + C` hai lần liên tiếp** để force-kill,
+hoặc chạy uvicorn với `--timeout-graceful-shutdown 5`.
+
+### `NetworkError` khi mở qua nginx / Cloudflare / proxy ngược
+
+Phiên bản hiện tại đã set header `X-Accel-Buffering: no` và `Cache-Control:
+no-cache`. Nếu proxy của bạn không tôn trọng các header này, tắt buffering thủ
+công ở proxy (nginx: `proxy_buffering off;`).
