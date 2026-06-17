@@ -23,9 +23,10 @@ Kết quả xuất ra JSON **tương thích hoàn toàn** với trình gán nhã
 - **Nhận diện từ viết tắt trong văn bản:** chỉ token IN HOA, không dính chữ
   thường/số; các ký tự `.,:;/-+=()` được coi như khoảng trắng nên `TP-HCM` tách
   thành `TP` và `HCM`. Quy tắc này khớp đúng với biên regex của trình gán nhãn.
-- **Gọi LLM một lần cho mỗi văn bản:** mọi từ nhập nhằng trong một văn bản được
-  gom lại và hỏi LLM trong **một** request; LLM trả về index nghĩa được chọn cho
-  từng từ, hoặc `-1` nếu không nghĩa nào phù hợp.
+- **Gọi LLM một lần cho mỗi văn bản, nhưng phân giải theo TỪNG VỊ TRÍ:** mọi
+  *lần xuất hiện* của từ nhập nhằng được đánh số và hỏi trong **một** request; LLM
+  trả về index nghĩa cho từng vị trí (hoặc `-1`). Nhờ vậy cùng một từ viết tắt xuất
+  hiện nhiều lần trong một văn bản có thể nhận nghĩa khác nhau (xem mục dưới).
 
 ```mermaid
 flowchart LR
@@ -36,6 +37,40 @@ flowchart LR
   direct --> out
   out --> review["Trinh gan nhan (review & export)"]
 ```
+
+---
+
+## Prompt được build như thế nào (per-occurrence)
+
+Mỗi *lần xuất hiện* của một từ nhập nhằng được đánh số `«id»` ngay trước từ trong
+văn bản gửi cho LLM (các offset gán nhãn vẫn tính trên văn bản gốc, marker chỉ
+dùng trong prompt). Sau đó liệt kê ứng viên nghĩa cho từng `«id»` và yêu cầu chọn
+độc lập theo ngữ cảnh quanh vị trí đó.
+
+Ví dụ: văn bản `"Tàu TS-234 di chuyển đến TN TS, thực hiện nhiệm vụ TS"` với từ điển
+`TS = Tên tàu/Địa danh/Khác = TS/Trường Sa/Trinh Sát` và `TN = Tên tàu/Khác = TN/Tây Nam`
+sẽ tạo prompt (phần USER):
+
+```text
+VĂN BẢN (mỗi vị trí cần phân giải được đánh dấu «số» ngay trước từ viết tắt):
+"""
+Tàu «1»TS-234 di chuyển đến «2»TN «3»TS, thực hiện nhiệm vụ «4»TS
+"""
+
+CÁC VỊ TRÍ CẦN PHÂN GIẢI (với mỗi «số», chọn index nghĩa phù hợp nhất theo NGỮ CẢNH QUANH VỊ TRÍ ĐÓ, hoặc -1 nếu không nghĩa nào đúng):
+«1» word="TS": [0] (Tên tàu) TS; [1] (Địa danh) Trường Sa; [2] (Khác) Trinh Sát
+«2» word="TN": [0] (Tên tàu) TN; [1] (Khác) Tây Nam
+«3» word="TS": [0] (Tên tàu) TS; [1] (Địa danh) Trường Sa; [2] (Khác) Trinh Sát
+«4» word="TS": [0] (Tên tàu) TS; [1] (Địa danh) Trường Sa; [2] (Khác) Trinh Sát
+
+Cùng một từ ở các vị trí khác nhau có thể có choice khác nhau — hãy xét độc lập từng vị trí.
+Trả về JSON theo dạng: {"resolutions": [{"id": <số vị trí>, "choice": <index hoặc -1>}, ...]}
+```
+
+LLM trả về ví dụ `{"resolutions":[{"id":1,"choice":0},{"id":2,"choice":1},{"id":3,"choice":1},{"id":4,"choice":2}]}`
+→ `«1»TS`=Tên tàu, `«3»TS`=Trường Sa, `«4»TS`=Trinh Sát (ba nghĩa khác nhau cho cùng từ TS).
+Chất lượng chọn vẫn phụ thuộc model, nhưng pipeline đã cung cấp đủ ngữ cảnh + cấu
+trúc để model phân biệt được từng vị trí.
 
 ---
 
@@ -220,6 +255,7 @@ Form fields: `input_file`, `dictionary_file`, `llama_url`, `model`, `api_key`,
                            "labels":5, "direct":3, "llm":2, "none":0, "elapsed_ms":2310}
 {"event":"document_error", "index":2, "source_index":1, "total":50, "name":"doc2",
                            "error_type":"LLMError", "error":"..."}
+{"event":"heartbeat", "index":3, "source_index":2, "name":"doc3", "waited_s":20}
 {"event":"checkpoint", "run_id":"run_...", "processed":20, "next_index":20, "file":"run_....json"}
 {"event":"done", "run_id":"run_...", "next_index":50, "documents":[...], "dictionary":{...},
                  "summary":{"documents":50,"terms":140,"direct":90,"llm":50,"none":0}}
@@ -266,6 +302,29 @@ Phổ biến trong môi trường doanh nghiệp; bạn cần kiểm tra theo th
    connection không bao giờ idle quá thời gian xử lý 1 văn bản. Nếu vẫn bị
    reset, có thể proxy reset cả connection có data mà response chưa đóng → cần
    liên hệ team mạng để whitelist.
+
+### "Error in body stream" / stream đứt giữa chừng nhưng server vẫn chạy
+
+Triệu chứng: log uvicorn vẫn xử lý và **vẫn tạo checkpoint**, nhưng giao diện báo
+`Error in body stream` (Firefox) hoặc `NetworkError` và ngừng cập nhật log.
+
+Nguyên nhân: có proxy/tường lửa giữa trình duyệt và uvicorn. Khi đang gọi LLM cho
+một văn bản, stream **không có byte nào chảy** trong vài chục giây → proxy coi là
+idle và **cắt phía trình duyệt**, trong khi vẫn giữ kết nối phía server (nên server
+chạy tiếp và checkpoint tiếp).
+
+Cách xử lý (đã tích hợp từ `1.3.0`):
+
+1. **Heartbeat**: server gửi 1 dòng `{"event":"heartbeat"}` mỗi ~10s trong lúc chờ
+   LLM nên stream không bao giờ idle lâu — giải quyết phần lớn trường hợp idle-timeout.
+2. **Tự khôi phục từ checkpoint**: nếu stream vẫn đứt (proxy cắt cứng theo tổng thời
+   gian), giao diện sẽ tự **poll `/api/checkpoints`** theo `run_id`; khi server chạy
+   xong (checkpoint `done`) thì nạp kết quả như bình thường. Cần bật checkpoint
+   (`checkpoint_every > 0`).
+3. **Khôi phục thủ công**: mở mục "Checkpoints đã lưu" → *Tải JSON* / *Trình gán nhãn*,
+   hoặc *Chạy tiếp* (đặt `start_index = next_index`).
+4. **Triệt để**: kết nối trình duyệt thẳng tới uvicorn (không qua proxy), hoặc nhờ
+   team mạng whitelist host:port, hoặc đặt `NO_PROXY` phù hợp.
 
 ### "Kiểm tra kết nối" OK nhưng "Chạy phân giải" hỏng
 

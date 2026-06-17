@@ -58,8 +58,16 @@ class Entry:
 class LLMClientLike(Protocol):
     def resolve(
         self, text: str, items: list[dict[str, Any]]
-    ) -> dict[str, int]:  # pragma: no cover - protocol
+    ) -> dict[int, int]:  # pragma: no cover - protocol
         ...
+
+
+# Markers wrapped around the occurrence id in the text we send to the LLM, e.g.
+# "Tàu «1»TS-234 ... «2»TS". Chosen to be visually distinctive and very unlikely
+# to appear in the source text. They are only used in the prompt; label offsets
+# are always computed against the ORIGINAL text.
+MARK_OPEN = "«"
+MARK_CLOSE = "»"
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +204,24 @@ def find_occurrences(text: str, words: list[str]) -> list[tuple[int, int, str]]:
     return [(m.start(), m.end(), m.group(0)) for m in regex.finditer(text)]
 
 
+def build_marked_text(text: str, occurrences: list[tuple[int, int, int, str]]) -> str:
+    """Insert ``«id»`` right before each occurrence so the LLM sees its position.
+
+    ``occurrences`` is a list of ``(occurrence_id, start, end, word)`` sorted by
+    ``start`` ascending. Only used to build the prompt — never for offsets.
+    """
+    out: list[str] = []
+    cursor = 0
+    for oid, start, _end, _word in occurrences:
+        if start < cursor:  # safety against any overlap
+            continue
+        out.append(text[cursor:start])
+        out.append(f"{MARK_OPEN}{oid}{MARK_CLOSE}")
+        cursor = start
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def make_label(
     text: str,
     start: int,
@@ -228,37 +254,43 @@ def resolve_document(
 ) -> list[dict[str, Any]]:
     """Resolve all abbreviation occurrences in a single document.
 
-    The LLM (if any ambiguous word is present) is called exactly once for the
-    whole document. Its decision for a word is applied to every occurrence of
-    that word in the document.
+    The LLM (if any ambiguous occurrence is present) is called exactly once for the
+    whole document, but it resolves **each occurrence independently**: every
+    ambiguous occurrence gets its own id and the text is marked with ``«id»`` so the
+    same abbreviation appearing twice can be assigned two different meanings.
     """
     text = text or ""
     occurrences = find_occurrences(text, list(by_word.keys()))
     if not occurrences:
         return []
 
-    # Collect the distinct ambiguous words that actually occur.
-    ambiguous_words: list[str] = []
-    seen: set[str] = set()
-    for _, _, word in occurrences:
-        entry = by_word[word]
-        if entry.is_ambiguous and word not in seen:
-            seen.add(word)
-            ambiguous_words.append(word)
+    # Assign an id to every ambiguous occurrence, in document order.
+    ambiguous_occ: list[tuple[int, int, int, str]] = []  # (id, start, end, word)
+    next_id = 0
+    for start, end, word in occurrences:
+        if by_word[word].is_ambiguous:
+            next_id += 1
+            ambiguous_occ.append((next_id, start, end, word))
 
-    resolutions: dict[str, int] = {}
-    if ambiguous_words:
+    resolutions: dict[int, int] = {}
+    if ambiguous_occ:
         if llm_client is None:
             raise ValueError("Có từ nhập nhằng nhưng không cung cấp llm_client.")
-        items = [{"word": w, "senses": by_word[w].senses} for w in ambiguous_words]
+        marked_text = build_marked_text(text, ambiguous_occ)
+        items = [
+            {"id": oid, "word": word, "senses": by_word[word].senses}
+            for oid, _s, _e, word in ambiguous_occ
+        ]
+        distinct_words = len({word for _i, _s, _e, word in ambiguous_occ})
         t0 = time.monotonic()
-        resolutions = llm_client.resolve(text, items) or {}
+        resolutions = llm_client.resolve(marked_text, items) or {}
         logger.info(
-            "resolve_document: %d ambiguous word(s) resolved in %.2fs",
-            len(items), time.monotonic() - t0,
+            "resolve_document: %d ambiguous occurrence(s) of %d distinct word(s) resolved in %.2fs",
+            len(items), distinct_words, time.monotonic() - t0,
         )
 
     labels: list[dict[str, Any]] = []
+    occ_id = 0
     for start, end, word in occurrences:
         entry = by_word[word]
         if not entry.is_ambiguous:
@@ -267,8 +299,9 @@ def resolve_document(
             labels.append(make_label(text, start, end, word, entry.senses[0], "rule", True))
             continue
 
+        occ_id += 1
         try:
-            choice = int(resolutions.get(word, -1))
+            choice = int(resolutions.get(occ_id, -1))
         except (TypeError, ValueError):
             choice = -1
 

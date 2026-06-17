@@ -18,6 +18,7 @@ Endpoints
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -50,7 +51,14 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="Abbreviation Resolution", version="1.2.0")
+# While a single document is being resolved the stream is otherwise idle (one slow
+# LLM call). Many corporate proxies/firewalls reset an idle HTTP response, which
+# surfaces in the browser as "NetworkError"/"Error in body stream" even though the
+# server keeps working. Emitting a heartbeat line every few seconds keeps bytes
+# flowing so the connection is never considered idle.
+HEARTBEAT_SECONDS = 10.0
+
+app = FastAPI(title="Abbreviation Resolution", version="1.3.0")
 
 
 def _build_client(
@@ -379,9 +387,26 @@ async def api_resolve(
 
                 t0 = time.monotonic()
                 try:
-                    labels = await run_in_threadpool(
-                        resolve_document, text, by_word, client
+                    # Run the (blocking) resolution in a worker thread and emit a
+                    # heartbeat every HEARTBEAT_SECONDS while we wait, so the HTTP
+                    # response never goes idle long enough for a proxy to cut it.
+                    task = asyncio.ensure_future(
+                        run_in_threadpool(resolve_document, text, by_word, client)
                     )
+                    while True:
+                        done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
+                        if task in done:
+                            break
+                        yield _ndjson(
+                            {
+                                "event": "heartbeat",
+                                "index": position + 1,
+                                "source_index": abs_index,
+                                "name": name,
+                                "waited_s": int(time.monotonic() - t0),
+                            }
+                        )
+                    labels = task.result()
                 except LLMError as exc:
                     logger.warning("Document %s -> LLM error: %s", name, exc)
                     yield _ndjson(

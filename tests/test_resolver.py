@@ -142,6 +142,39 @@ def test_resolve_documents_output_schema_and_summary():
     assert out["summary"]["terms"] == len(doc["labels"])
 
 
+class _RecordingClient:
+    """Returns a choice per occurrence id and records what it was asked."""
+
+    def __init__(self, by_id):
+        self.by_id = by_id
+        self.seen_text = None
+        self.seen_items = None
+
+    def resolve(self, text, items):
+        self.seen_text = text
+        self.seen_items = items
+        return {it["id"]: self.by_id.get(it["id"], -1) for it in items}
+
+
+def test_resolve_document_per_occurrence_different_meanings():
+    """The same abbreviation in two places can get two different senses."""
+    _, by_word = parse_dictionary(SAMPLE_DICT)
+    text = "Tàu TC ra khơi, đội TC kiểm tra."  # two standalone TC occurrences
+    client = _RecordingClient({1: 0, 2: 1})  # occ#1 -> Tàu cá, occ#2 -> TC
+    labels = resolve_document(text, by_word, client)
+
+    tcs = [lb for lb in labels if lb["term"] == "TC"]
+    assert len(tcs) == 2
+    assert tcs[0]["senseLabel"] == "Tàu cá"
+    assert tcs[1]["senseLabel"] == "TC"
+
+    # The model saw the occurrence-id markers in the text it was given...
+    assert "«1»" in client.seen_text and "«2»" in client.seen_text
+    # ...and one item per occurrence (both the same word here).
+    assert [it["id"] for it in client.seen_items] == [1, 2]
+    assert all(it["word"] == "TC" for it in client.seen_items)
+
+
 def test_resolve_documents_handles_unknown_uppercase_tokens():
     records = [{"id": "d3", "input": "Các đơn vị ABC và XYZ không có trong từ điển"}]
     out = resolve_documents(records, SAMPLE_DICT, MockLLMClient())

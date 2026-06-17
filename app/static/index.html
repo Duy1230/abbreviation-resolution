@@ -351,6 +351,10 @@ $('runBtn').onclick = async () => {
           setProgress(doneCount, total);
           logLine('log-err', `   ${ev.name} ✗ ${ev.error_type||'Error'}: ${ev.error}`);
           break;
+        case 'heartbeat':
+          setStatus($('runStatus'), 'info', `<span class="spinner"></span>Đang xử lý ${ev.index}/${total}: ${esc(ev.name)}... (đang chờ LLM ${ev.waited_s}s)`);
+          logLine('log-muted', `   · ${ev.name}: vẫn đang chờ LLM (${ev.waited_s}s)`);
+          break;
         case 'checkpoint':
           lastNext = ev.next_index;
           logLine('log-warn', `💾 Đã lưu checkpoint: ${ev.processed} mẫu → ${ev.file}${ev.final?' (cuối)':''} · next_index=${ev.next_index}`);
@@ -385,16 +389,75 @@ $('runBtn').onclick = async () => {
     $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
     refreshCheckpoints();
   }catch(e){
+    logLine('log-err', 'EXCEPTION: ' + e.message);
+    const ckptEnabled = parseInt($('checkpointEvery').value || '20', 10) > 0;
+    if(runId && ckptEnabled && !finalResult){
+      const ok = await recoverViaCheckpoint(runId, total, e.message);
+      if(ok){ return; }
+    }
     setStatus($('runStatus'), 'err',
       `Thất bại: ${esc(e.message)}<br>` +
       (lastNext!=null ? `<span class="small">Tiến trình đã lưu tới checkpoint. Để chạy tiếp, đặt <b>Index bắt đầu = ${lastNext}</b> rồi chạy lại (xem mục Checkpoints).</span><br>` : '') +
-      `<span class="small">Gợi ý: nếu là <code>NetworkError</code>, kiểm tra log server (uvicorn) và bấm "Test LLM" để xem prompt nhỏ có chạy được không.</span>`);
-    logLine('log-err', 'EXCEPTION: ' + e.message);
+      `<span class="small">Gợi ý: nếu là <code>Error in body stream</code>/<code>NetworkError</code> mà server vẫn chạy (vẫn tạo checkpoint), nguyên nhân thường là proxy cắt kết nối khi stream nhàn rỗi. Bật checkpoint để tự khôi phục; xem mục Troubleshooting.</span>`);
     refreshCheckpoints();
   }finally{
     $('runBtn').disabled = false;
   }
 };
+
+// When the stream is severed mid-run (e.g. a proxy cuts an idle connection) the
+// server often keeps working and writing checkpoints. Poll the checkpoint list
+// and, once the run is done (or clearly stalled), load the result so the user
+// doesn't lose anything.
+async function recoverViaCheckpoint(runId, total, reason){
+  setStatus($('runStatus'), 'info', `<span class="spinner"></span>Mất kết nối stream (${esc(reason)}). Server có thể vẫn đang chạy — đang khôi phục từ checkpoint...`);
+  logLine('log-warn', `Đang khôi phục từ checkpoint run=${runId} ...`);
+  let lastProcessed = -1, stallSince = Date.now();
+  const STALL_MS = 120000, CAP_MS = 60*60*1000, POLL_MS = 4000, startT = Date.now();
+  while(Date.now() - startT < CAP_MS){
+    await new Promise(r => setTimeout(r, POLL_MS));
+    let c = null;
+    try{
+      const list = (await (await fetch('/api/checkpoints')).json()).checkpoints || [];
+      c = list.find(x => x.run_id === runId);
+    }catch(_){ continue; }
+    if(!c) continue;
+    if(c.processed !== lastProcessed){
+      lastProcessed = c.processed; stallSince = Date.now();
+      setProgress(c.processed, total || c.total || 0);
+      logLine('log-muted', `   khôi phục: ${c.processed}/${c.total!=null?c.total:'?'} đã lưu...`);
+    }
+    if(c.done){ return await loadCheckpointResult(runId, true); }
+    if(Date.now() - stallSince > STALL_MS){
+      logLine('log-warn', 'Checkpoint không tiến triển — server có thể đã dừng. Nạp kết quả tạm.');
+      return await loadCheckpointResult(runId, false);
+    }
+  }
+  return await loadCheckpointResult(runId, false);
+}
+
+async function loadCheckpointResult(runId, done){
+  let data;
+  try{ data = await (await fetch('/api/checkpoints/' + encodeURIComponent(runId))).json(); }
+  catch(e){ setStatus($('runStatus'),'err','Không nạp được checkpoint: ' + esc(e.message)); return false; }
+  lastResult = { documents: data.documents||[], dictionary: data.dictionary||{}, summary: data.summary||{} };
+  const s = lastResult.summary || {};
+  $('stDocs').textContent = s.documents||0;
+  $('stTerms').textContent = s.terms||0;
+  $('stDirect').textContent = s.direct||0;
+  $('stLlm').textContent = s.llm||0;
+  $('stNone').textContent = s.none||0;
+  $('resultCard').classList.remove('hidden');
+  if(done){
+    setStatus($('runStatus'), 'ok', `Đã khôi phục TOÀN BỘ kết quả từ checkpoint (run=${esc(runId)}, ${s.documents||0} văn bản). Stream bị cắt nhưng server đã chạy xong.`);
+    logLine('log-ok', `Khôi phục hoàn tất: ${s.documents||0} văn bản.`);
+  }else{
+    setStatus($('runStatus'), 'info', `Đã nạp kết quả TẠM từ checkpoint (run=${esc(runId)}, ${s.documents||0} văn bản). Để chạy tiếp phần còn lại, đặt Index bắt đầu = ${data.next_index!=null?data.next_index:'?'} rồi chạy lại.`);
+  }
+  $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
+  refreshCheckpoints();
+  return true;
+}
 
 function download(name, obj){
   const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});

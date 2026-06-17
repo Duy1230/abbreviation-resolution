@@ -307,5 +307,5 @@ def test_llm_client_resolve_fast_fails_on_network_error(monkeypatch):
     monkeypatch.setattr(LLMClient, "_post", fake_post)
     cli = LLMClient(base_url="http://x/v1")
     with pytest.raises(Exception):  # LLMError, but we don't import it here
-        cli.resolve("text", [{"word": "X", "senses": []}])
+        cli.resolve("text", [{"id": 1, "word": "X", "senses": []}])
     assert calls["n"] == 1  # short-circuited after first network failure

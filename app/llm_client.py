@@ -24,22 +24,26 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "Bạn là chuyên gia phân giải (disambiguation) từ viết tắt tiếng Việt. "
-    "Nhiệm vụ: dựa HOÀN TOÀN vào ngữ cảnh của văn bản được cung cấp để chọn nghĩa "
-    "đúng cho mỗi từ viết tắt nhập nhằng. Chỉ được chọn trong các nghĩa ứng viên "
-    "đã liệt kê. Nếu KHÔNG có nghĩa nào phù hợp với ngữ cảnh, hãy trả về choice = -1. "
+    "Nhiệm vụ: dựa HOÀN TOÀN vào ngữ cảnh xung quanh TỪNG VỊ TRÍ để chọn nghĩa "
+    "đúng cho từ viết tắt nhập nhằng tại vị trí đó. Mỗi vị trí cần phân giải được "
+    "đánh dấu bằng «số» ngay trước từ. LƯU Ý QUAN TRỌNG: cùng một từ viết tắt xuất "
+    "hiện ở nhiều vị trí CÓ THỂ mang nghĩa khác nhau — phải xét riêng từng vị trí. "
+    "Chỉ được chọn trong các nghĩa ứng viên đã liệt kê cho vị trí đó. Nếu KHÔNG có "
+    "nghĩa nào phù hợp với ngữ cảnh, hãy trả về choice = -1. "
     "Chỉ trả về JSON đúng schema, tuyệt đối không thêm lời giải thích."
 )
 
-PROMPT_TEMPLATE = """VĂN BẢN:
+PROMPT_TEMPLATE = """VĂN BẢN (mỗi vị trí cần phân giải được đánh dấu «số» ngay trước từ viết tắt):
 \"\"\"
 {text}
 \"\"\"
 
-CÁC TỪ VIẾT TẮT CẦN PHÂN GIẢI (chọn index nghĩa phù hợp nhất theo ngữ cảnh, hoặc -1 nếu không nghĩa nào đúng):
+CÁC VỊ TRÍ CẦN PHÂN GIẢI (với mỗi «số», chọn index nghĩa phù hợp nhất theo NGỮ CẢNH QUANH VỊ TRÍ ĐÓ, hoặc -1 nếu không nghĩa nào đúng):
 {listing}
 
-Trả về JSON theo dạng: {{"resolutions": [{{"word": "<từ>", "choice": <index hoặc -1>}}, ...]}}
-Mỗi từ ở trên phải có đúng một mục tương ứng trong "resolutions"."""
+Cùng một từ ở các vị trí khác nhau có thể có choice khác nhau — hãy xét độc lập từng vị trí.
+Trả về JSON theo dạng: {{"resolutions": [{{"id": <số vị trí>, "choice": <index hoặc -1>}}, ...]}}
+Mỗi vị trí «số» ở trên phải có đúng một mục tương ứng trong "resolutions"."""
 
 
 class LLMError(Exception):
@@ -47,7 +51,7 @@ class LLMError(Exception):
 
 
 def build_schema() -> dict[str, Any]:
-    """JSON schema used to constrain llama.cpp output."""
+    """JSON schema used to constrain llama.cpp output (one entry per occurrence)."""
     return {
         "type": "object",
         "properties": {
@@ -56,10 +60,10 @@ def build_schema() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "word": {"type": "string"},
+                        "id": {"type": "integer"},
                         "choice": {"type": "integer"},
                     },
-                    "required": ["word", "choice"],
+                    "required": ["id", "choice"],
                     "additionalProperties": False,
                 },
             }
@@ -70,6 +74,7 @@ def build_schema() -> dict[str, Any]:
 
 
 def build_listing(items: list[dict[str, Any]]) -> str:
+    """One line per *occurrence*: ``«id» word="W": [0] (type) meaning; ...``."""
     lines = []
     for item in items:
         senses = item["senses"]
@@ -77,7 +82,7 @@ def build_listing(items: list[dict[str, Any]]) -> str:
             f"[{i}] ({getattr(s, 'explanation', '')}) {getattr(s, 'label', '')}"
             for i, s in enumerate(senses)
         )
-        lines.append(f'- word="{item["word"]}": {cands}')
+        lines.append(f'«{item["id"]}» word="{item["word"]}": {cands}')
     return "\n".join(lines)
 
 
@@ -106,11 +111,11 @@ def _extract_json(content: Any) -> Any:
     raise ValueError("Không tìm thấy JSON hợp lệ trong phản hồi LLM.")
 
 
-def parse_resolutions(content: Any, items: list[dict[str, Any]]) -> dict[str, int]:
-    """Parse model output into ``{word: choice}``.
+def parse_resolutions(content: Any, items: list[dict[str, Any]]) -> dict[int, int]:
+    """Parse model output into ``{occurrence_id: choice}``.
 
-    Robust to code fences / surrounding prose. Any word the model omitted (or that
-    cannot be parsed) defaults to ``-1`` (treated as "none fit" downstream).
+    Robust to code fences / surrounding prose. Any occurrence id the model omitted
+    (or that cannot be parsed) defaults to ``-1`` (treated as "none fit" downstream).
     """
     data = _extract_json(content)
     if isinstance(data, dict):
@@ -120,20 +125,22 @@ def parse_resolutions(content: Any, items: list[dict[str, Any]]) -> dict[str, in
     else:
         arr = []
 
-    mapping: dict[str, int] = {}
+    mapping: dict[int, int] = {}
     for it in arr:
         if not isinstance(it, dict):
             continue
-        word = str(it.get("word", "")).strip()
-        if not word:
-            continue
-        value = it.get("choice", it.get("index", -1))
+        raw_id = it.get("id", it.get("pos", it.get("position")))
         try:
-            mapping[word] = int(value)
+            oid = int(raw_id)
         except (TypeError, ValueError):
-            mapping[word] = -1
+            continue
+        value = it.get("choice", -1)
+        try:
+            mapping[oid] = int(value)
+        except (TypeError, ValueError):
+            mapping[oid] = -1
 
-    return {item["word"]: mapping.get(item["word"], -1) for item in items}
+    return {int(item["id"]): mapping.get(int(item["id"]), -1) for item in items}
 
 
 class LLMClient:
@@ -193,12 +200,12 @@ class LLMClient:
             response.raise_for_status()
             return response.json()
 
-    def resolve(self, text: str, items: list[dict[str, Any]]) -> dict[str, int]:
+    def resolve(self, text: str, items: list[dict[str, Any]]) -> dict[int, int]:
         if not items:
             return {}
 
-        words = [it["word"] for it in items]
-        logger.info("LLM resolve %d ambiguous word(s): %s", len(items), words)
+        occ = [(it["id"], it["word"]) for it in items]
+        logger.info("LLM resolve %d occurrence(s): %s", len(items), occ)
 
         messages = build_messages(text, items)
         schema = build_schema()
@@ -264,18 +271,24 @@ class MockLLMClient:
 
     def __init__(self, strategy: str = "context", choices: dict[str, int] | None = None) -> None:
         self.strategy = strategy
+        # ``choices`` is keyed by *word* (applies to every occurrence of that word);
+        # ``choices_by_id`` (optional) overrides a specific occurrence id.
         self.choices = choices or {}
+        self.choices_by_id: dict[int, int] = {}
 
-    def resolve(self, text: str, items: list[dict[str, Any]]) -> dict[str, int]:
+    def resolve(self, text: str, items: list[dict[str, Any]]) -> dict[int, int]:
         lowered = (text or "").lower()
-        result: dict[str, int] = {}
+        result: dict[int, int] = {}
         for item in items:
+            oid = int(item["id"])
             word = item["word"]
             senses = item["senses"]
-            if word in self.choices:
-                result[word] = self.choices[word]
+            if oid in self.choices_by_id:
+                result[oid] = self.choices_by_id[oid]
+            elif word in self.choices:
+                result[oid] = self.choices[word]
             elif self.strategy == "none":
-                result[word] = -1
+                result[oid] = -1
             elif self.strategy == "context":
                 picked = 0
                 for i, sense in enumerate(senses):
@@ -283,9 +296,9 @@ class MockLLMClient:
                     if meaning and meaning in lowered:
                         picked = i
                         break
-                result[word] = picked
+                result[oid] = picked
             else:  # "first" / default
-                result[word] = 0
+                result[oid] = 0
         return result
 
 
